@@ -1,11 +1,21 @@
-const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
-
 import { useState, useEffect } from "react";
-
 import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw } from "lucide-react";
+
+// Firebase Imports
+import { db } from "../firebase"; 
+import { 
+  collection, 
+  query, 
+  onSnapshot, 
+  orderBy, 
+  doc, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  serverTimestamp 
+} from "firebase/firestore";
+
 import ClientImport from "@/components/clients/ClientImport.jsx";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import ClientForm from "@/components/clients/ClientForm.jsx";
 import { format, parseISO } from "date-fns";
 
@@ -19,19 +29,26 @@ export default function Clients() {
   const [showImport, setShowImport] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const load = () => {
-    setLoading(true);
-    Promise.all([
-      db.entities.Client.list("client_name", 2000),
-      db.entities.Task.list("-entry_date", 1000),
-    ]).then(([c, t]) => {
-      setClients(c);
-      setTasks(t);
+  // Real-time synchronization for Clients and Tasks
+  useEffect(() => {
+    const clientsRef = collection(db, "clients");
+    const tasksRef = collection(db, "tasks");
+
+    // Listen for Clients
+    const unsubClients = onSnapshot(query(clientsRef, orderBy("client_name")), (snap) => {
+      const clientData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setClients(clientData);
       setLoading(false);
     });
-  };
 
-  useEffect(() => { load(); }, []);
+    // Listen for Tasks (to populate Activity Timeline)
+    const unsubTasks = onSnapshot(query(tasksRef, orderBy("entry_date", "desc")), (snap) => {
+      const taskData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setTasks(taskData);
+    });
+
+    return () => { unsubClients(); unsubTasks(); };
+  }, []);
 
   const filtered = search.length >= 1
     ? clients.filter(c =>
@@ -42,26 +59,57 @@ export default function Clients() {
       )
     : clients;
 
+  // Compute tasks for the selected client using client_code link
   const clientTasks = selected ? tasks.filter(t => t.client_code === selected.client_code) : [];
 
   const handleDelete = async (client) => {
     if (!window.confirm(`Delete "${client.client_name}" permanently?`)) return;
-    await db.entities.Client.delete(client.id);
-    if (selected?.id === client.id) setSelected(null);
-    load();
+    try {
+      await deleteDoc(doc(db, "clients", client.id));
+      if (selected?.id === client.id) setSelected(null);
+    } catch (error) {
+      console.error("Error deleting client:", error);
+    }
   };
 
   const handleSave = async (data) => {
-    if (data.id) {
-      await db.entities.Client.update(data.id, data);
-    } else {
-      const existing = clients.find(c => c.client_code === data.client_code);
-      if (existing) { alert("Client code already exists!"); return; }
-      await db.entities.Client.create(data);
+    try {
+      if (data.id) {
+        // Update existing client
+        const clientRef = doc(db, "clients", data.id);
+        await updateDoc(clientRef, data);
+      } else {
+        // Check for duplicate client code locally (snapshot-based)
+        const exists = clients.some(c => c.client_code === data.client_code);
+        if (exists) { 
+          alert("Client code already exists!"); 
+          return; 
+        }
+        // Create new client
+        await addDoc(collection(db, "clients"), { 
+          ...data, 
+          created_at: serverTimestamp() 
+        });
+      }
+      setShowForm(false);
+      setEditClient(null);
+    } catch (error) {
+      console.error("Error saving client:", error);
     }
-    setShowForm(false);
-    setEditClient(null);
-    load();
+  };
+
+  // Helper function for inline task status updates
+  const handleTaskStatusUpdate = async (taskId, newStatus) => {
+    try {
+      const taskRef = doc(db, "tasks", taskId);
+      const update = { status: newStatus };
+      if (newStatus === "Completed") {
+        update.closure_date = format(new Date(), "yyyy-MM-dd");
+      }
+      await updateDoc(taskRef, update);
+    } catch (error) {
+      console.error("Error updating task status:", error);
+    }
   };
 
   const openEdit = (client) => { setEditClient(client); setShowForm(true); };
@@ -76,7 +124,7 @@ export default function Clients() {
           <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>{clients.length} clients registered</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={load} className="p-2 rounded-xl transition-colors" style={{ background: "var(--glass)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
+          <button onClick={() => {}} className="p-2 rounded-xl transition-colors" style={{ background: "var(--glass)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
             <RefreshCw className="w-4 h-4" />
           </button>
           <button onClick={() => setShowImport(v => !v)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all" style={{ background: "var(--glass)", border: "1px solid var(--brand-green)", color: "var(--brand-green)" }}>
@@ -89,7 +137,7 @@ export default function Clients() {
       </div>
 
       {showImport && (
-        <ClientImport onImportDone={() => { load(); setShowImport(false); }} onClose={() => setShowImport(false)} />
+        <ClientImport onImportDone={() => setShowImport(false)} onClose={() => setShowImport(false)} />
       )}
       {showForm && (
         <ClientForm client={editClient} onSave={handleSave} onClose={closeForm} />
@@ -218,13 +266,7 @@ export default function Clients() {
                               <span className="text-xs font-medium" style={{ color: "var(--text-main)" }}>{t.action}</span>
                               <select
                                 value={t.status}
-                                onChange={async (e) => {
-                                  const newStatus = e.target.value;
-                                  const update = { status: newStatus };
-                                  if (newStatus === "Completed") update.closure_date = format(new Date(), "yyyy-MM-dd");
-                                  await db.entities.Task.update(t.id, update);
-                                  load();
-                                }}
+                                onChange={(e) => handleTaskStatusUpdate(t.id, e.target.value)}
                                 style={{ padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: sc.bg, border: `1px solid ${sc.border}`, color: sc.text, cursor: "pointer" }}
                               >
                                 {["Pending","Under Process","Waiting Client","Completed","Cancelled"].map(s => <option key={s} value={s}>{s}</option>)}

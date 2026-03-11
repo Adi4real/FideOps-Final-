@@ -1,8 +1,24 @@
-const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
-
 import { useState, useEffect } from "react";
-
 import { Search, Plus, Upload, Pencil, Trash2, RefreshCw, CalendarPlus } from "lucide-react";
+
+// Firebase Imports
+import { db } from "../firebase"; 
+import { 
+  collection, 
+  query, 
+  onSnapshot, 
+  orderBy, 
+  doc, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  getDocs, 
+  where,
+  serverTimestamp 
+} from "firebase/firestore";
+
+import LeadForm from "@/components/leads/LeadForm.jsx";
+import LeadImport from "@/components/leads/LeadImport.jsx";
 
 function makeGCalLeadLink(lead) {
   const today = new Date();
@@ -15,8 +31,6 @@ function makeGCalLeadLink(lead) {
   );
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
 }
-import LeadForm from "@/components/leads/LeadForm.jsx";
-import LeadImport from "@/components/leads/LeadImport.jsx";
 
 const LEAD_CATEGORIES = ["Normal Lead", "Strong Lead", "Meet Urgent", "Upcoming Meeting", "Financial Planning"];
 const ACTION_STAGES = [
@@ -25,18 +39,10 @@ const ACTION_STAGES = [
   "Physical Mandate", "Physical KYC", "Documentation Complete", "Onboarding Completed"
 ];
 
-function getBranch(rm) {
-  if (!rm) return "";
-  if (rm === "Ujjwal and Joel") return "Katni Branch";
-  if (rm.includes("Ujjwal") || rm.includes("Manny")) return "Chennai Branch";
-  if (rm.includes("Uday") || rm.includes("Joel") || rm.includes("Prince")) return "Katni Branch";
-  return "";
-}
-
-async function generateLeadCode(existing) {
+async function generateLeadCode(leads) {
   const year = new Date().getFullYear().toString().slice(-2);
   const prefix = `LD-${year}-`;
-  const nums = existing
+  const nums = leads
     .map(l => l.lead_code)
     .filter(c => c && c.startsWith(prefix))
     .map(c => parseInt(c.replace(prefix, ""), 10))
@@ -73,15 +79,22 @@ export default function LeadClients() {
   const [showImport, setShowImport] = useState(false);
   const [converting, setConverting] = useState(null);
 
-  const load = () => {
-    setLoading(true);
-    db.entities.Lead.list("-created_date", 2000).then(data => {
-      setLeads(data);
+  // Firestore Real-time Listener
+  useEffect(() => {
+    const leadsRef = collection(db, "leads");
+    const q = query(leadsRef, orderBy("created_at", "desc"));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const leadData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setLeads(leadData);
       setLoading(false);
     });
-  };
 
-  useEffect(() => { load(); }, []);
+    return () => unsubscribe();
+  }, []);
 
   const active = leads.filter(l => l.status !== "Converted");
 
@@ -99,43 +112,69 @@ export default function LeadClients() {
   if (filterStage !== "all") filtered = filtered.filter(l => l.action_stage === filterStage);
 
   const handleSave = async (data) => {
-    if (data.id) {
-      await db.entities.Lead.update(data.id, data);
-    } else {
-      const code = await generateLeadCode(leads);
-      await db.entities.Lead.create({ ...data, lead_code: code, status: "Active" });
+    try {
+      if (data.id) {
+        const leadRef = doc(db, "leads", data.id);
+        await updateDoc(leadRef, data);
+      } else {
+        const code = await generateLeadCode(leads);
+        await addDoc(collection(db, "leads"), { 
+          ...data, 
+          lead_code: code, 
+          status: "Active",
+          created_at: serverTimestamp()
+        });
+      }
+      setShowForm(false); 
+      setEditLead(null);
+    } catch (error) {
+      console.error("Error saving lead:", error);
     }
-    setShowForm(false); setEditLead(null); load();
   };
 
   const handleDelete = async (lead) => {
     if (!window.confirm(`Delete "${lead.lead_name}" permanently?`)) return;
-    await db.entities.Lead.delete(lead.id);
-    load();
+    try {
+      await deleteDoc(doc(db, "leads", lead.id));
+    } catch (error) {
+      console.error("Error deleting lead:", error);
+    }
   };
 
   const handleStageChange = async (lead, newStage) => {
-    if (newStage === "Onboarding Completed") {
-      setConverting(lead.id);
-      // Convert to client
-      const clientCode = lead.lead_code ? lead.lead_code.replace("LD-", "FW-C-") : `FW-C-${Date.now()}`;
-      const newClient = await db.entities.Client.create({
-        client_code: clientCode,
-        client_name: lead.lead_name,
-        rm_assigned: lead.rm_assigned || "",
-        branch: lead.branch || "",
-        notes: lead.notes || "",
-      });
-      await db.entities.Lead.update(lead.id, {
-        action_stage: newStage,
-        status: "Converted",
-        converted_client_id: newClient.id,
-      });
+    try {
+      if (newStage === "Onboarding Completed") {
+        setConverting(lead.id);
+        
+        // 1. Create Client in Firestore
+        const clientCode = lead.lead_code ? lead.lead_code.replace("LD-", "FW-C-") : `FW-C-${Date.now()}`;
+        const clientRef = collection(db, "clients");
+        const newClient = await addDoc(clientRef, {
+          client_code: clientCode,
+          client_name: lead.lead_name,
+          rm_assigned: lead.rm_assigned || "",
+          branch: lead.branch || "",
+          notes: lead.notes || "",
+          created_at: serverTimestamp(),
+          converted_from_lead: lead.id
+        });
+
+        // 2. Update Lead status to Converted
+        const leadRef = doc(db, "leads", lead.id);
+        await updateDoc(leadRef, {
+          action_stage: newStage,
+          status: "Converted",
+          converted_client_id: newClient.id,
+        });
+        
+        setConverting(null);
+      } else {
+        const leadRef = doc(db, "leads", lead.id);
+        await updateDoc(leadRef, { action_stage: newStage });
+      }
+    } catch (error) {
+      console.error("Error updating stage:", error);
       setConverting(null);
-      load();
-    } else {
-      await db.entities.Lead.update(lead.id, { action_stage: newStage });
-      load();
     }
   };
 
@@ -160,7 +199,7 @@ export default function LeadClients() {
           <p className="text-sm mt-1" style={{ color: "#889995" }}>{active.length} active prospects</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <button onClick={load} style={{ padding: "8px 10px", borderRadius: 10, background: "var(--glass)", border: "1px solid var(--border)", color: "#889995", cursor: "pointer" }}>
+          <button onClick={() => {}} style={{ padding: "8px 10px", borderRadius: 10, background: "var(--glass)", border: "1px solid var(--border)", color: "#889995", cursor: "pointer" }}>
             <RefreshCw className="w-4 h-4" />
           </button>
           <button onClick={() => setShowImport(v => !v)} style={{ padding: "8px 16px", borderRadius: 10, fontSize: 13, fontWeight: 600, background: "transparent", border: "1px solid #008254", color: "#008254", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
@@ -172,7 +211,7 @@ export default function LeadClients() {
         </div>
       </div>
 
-      {showImport && <LeadImport onImportDone={() => { load(); setShowImport(false); }} onClose={() => setShowImport(false)} />}
+      {showImport && <LeadImport onImportDone={() => setShowImport(false)} onClose={() => setShowImport(false)} />}
       {showForm && <LeadForm lead={editLead} onSave={handleSave} onClose={() => { setShowForm(false); setEditLead(null); }} />}
 
       {/* Filters */}

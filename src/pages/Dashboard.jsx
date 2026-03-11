@@ -1,7 +1,4 @@
-const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
-
 import { useState, useEffect } from "react";
-
 import { Link } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import {
@@ -12,10 +9,13 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell, Legend
 } from "recharts";
-import { format, isToday, isPast, parseISO, differenceInDays, startOfMonth, subMonths } from "date-fns";
+import { format, isToday, isPast, parseISO, startOfMonth, subMonths } from "date-fns";
+
+// Firebase Imports
+import { db } from "../firebase"; 
+import { collection, query, onSnapshot } from "firebase/firestore";
 
 const COLORS = ["#008254", "#4ade80", "#60a5fa", "#fbbf24", "#f87171"];
-const chartStyle = { background: "transparent", border: "none", fontSize: 11, color: "#889995" };
 
 const tooltipStyle = {
   contentStyle: { background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#c8d4d0" },
@@ -28,13 +28,24 @@ export default function Dashboard() {
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // Real-time synchronization for Tasks and Leads
   useEffect(() => {
-    Promise.all([
-      db.entities.Task.list("-entry_date", 500),
-      db.entities.Lead.list("-created_date", 500),
-    ]).then(([t, l]) => { setTasks(t); setLeads(l); setLoading(false); });
+    const tasksRef = collection(db, "tasks");
+    const leadsRef = collection(db, "leads");
+
+    const unsubTasks = onSnapshot(tasksRef, (snap) => {
+      setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+
+    const unsubLeads = onSnapshot(leadsRef, (snap) => {
+      setLeads(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    });
+
+    return () => { unsubTasks(); unsubLeads(); };
   }, []);
 
+  // Compute live KPIs from Firestore data
   const active = tasks.filter(t => !["Completed", "Cancelled"].includes(t.status));
   const completed = tasks.filter(t => t.status === "Completed");
   const overdue = active.filter(t => t.follow_up_date && isPast(parseISO(t.follow_up_date)) && !isToday(parseISO(t.follow_up_date)));
@@ -78,6 +89,12 @@ export default function Dashboard() {
     { label: "Active Leads", value: activeLeads.length, icon: UserPlus, color: "#a78bfa" },
     { label: "Converted Clients", value: convertedLeads.length, icon: Users, color: "#4ade80" },
   ];
+
+  if (loading) return (
+    <div className="flex items-center justify-center min-h-screen text-[#889995]">
+      Loading dashboard data...
+    </div>
+  );
 
   return (
     <div className="p-4 lg:p-8 space-y-8" style={{ background: "var(--bg-black)", minHeight: "100vh" }}>

@@ -1,11 +1,12 @@
-const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
-
 import { useState, useEffect, useRef } from "react";
-
 import { useNavigate } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import { format } from "date-fns";
 import { Search, CheckCircle2, Loader2 } from "lucide-react";
+
+// Firebase Imports
+import { db } from "../firebase"; 
+import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp } from "firebase/firestore"; 
 
 const RM_LIST = ["Ujjwal", "Ujjwal and Manny", "Ujjwal and Joel", "Uday and Joel", "Uday", "Joel", "Manny", "Prince"];
 
@@ -22,7 +23,7 @@ const CATEGORY_ACTIONS = {
     "KYC Update", "KYC Verification", "KYC Modification", "Physical KYC", "eKYC"
   ],
   "Portfolio Review": [
-    "SIP Switch", "SIP Stop", "SIP Top-up", "SIP Restart", "SIP Pause"
+    "SIP Switch", "SIP Stop", "SIP Top-up", "SIP Restart", "SIP Pause", "Scheme Switch", "Scheme Redemption", "Scheme Re-investment"
   ],
 };
 
@@ -72,8 +73,15 @@ export default function NewTask() {
     financial_year: getFinancialYear(),
   });
 
+  // Fetch Clients from Firestore for the search/suggestion feature
   useEffect(() => {
-    db.entities.Client.list("client_name", 1000).then(setClients);
+    const fetchClients = async () => {
+      const q = query(collection(db, "clients"), orderBy("client_name"));
+      const querySnapshot = await getDocs(q);
+      const clientList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setClients(clientList);
+    };
+    fetchClients();
   }, []);
 
   useEffect(() => {
@@ -93,7 +101,13 @@ export default function NewTask() {
 
   const selectClient = (c) => {
     setClientQuery(c.client_name);
-    setForm(f => ({ ...f, client_name: c.client_name, client_code: c.client_code, rm_assigned: c.rm_assigned || "", branch: c.branch || "" }));
+    setForm(f => ({ 
+      ...f, 
+      client_name: c.client_name, 
+      client_code: c.client_code, 
+      rm_assigned: c.rm_assigned || "", 
+      branch: c.branch || "" 
+    }));
     setShowSuggestions(false);
   };
 
@@ -108,12 +122,38 @@ export default function NewTask() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
-    const allTasks = await db.entities.Task.list("-serial_number", 1);
-    const serial = (allTasks[0]?.serial_number || 0) + 1;
-    const task_id = `FW-${getFYShort()}-${String(serial).padStart(4, "0")}`;
-    await db.entities.Task.create({ ...form, amount: form.amount ? parseFloat(form.amount) : undefined, serial_number: serial, task_id });
-    setSaved(true);
-    setTimeout(() => navigate(createPageUrl("LiveTasks")), 1200);
+
+    try {
+      // 1. Get the latest task to determine the next serial number
+      const tasksRef = collection(db, "tasks");
+      const q = query(tasksRef, orderBy("serial_number", "desc"), limit(1));
+      const querySnapshot = await getDocs(q);
+      
+      let serial = 1;
+      if (!querySnapshot.empty) {
+        serial = (querySnapshot.docs[0].data().serial_number || 0) + 1;
+      }
+
+      // Generate the custom Task ID (e.g., FW-26-0001)
+      const task_id = `FW-${getFYShort()}-${String(serial).padStart(4, "0")}`;
+
+      // 2. Actually save the data to your Firestore "tasks" collection
+      await addDoc(collection(db, "tasks"), { 
+        ...form, 
+        amount: form.amount ? parseFloat(form.amount) : null, 
+        serial_number: serial, 
+        task_id,
+        created_at: serverTimestamp() // Adds a server-side timestamp for accurate tracking
+      });
+
+      setSaved(true);
+      // Redirect to the Live Tasks page after a short delay
+      setTimeout(() => navigate(createPageUrl("LiveTasks")), 1200);
+    } catch (error) {
+      console.error("Error creating task in Firebase: ", error);
+      alert("Failed to save task. Check your console for details.");
+      setSaving(false);
+    }
   };
 
   if (saved) {

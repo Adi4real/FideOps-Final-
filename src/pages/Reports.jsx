@@ -1,12 +1,13 @@
-const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
-
 import { useState, useEffect } from "react";
-
 import { format, parseISO, startOfMonth, subMonths, differenceInDays } from "date-fns";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line, PieChart, Pie, Cell, Legend
+  PieChart, Pie, Cell, Legend
 } from "recharts";
+
+// Firebase Imports
+import { db } from "../firebase"; 
+import { collection, query, onSnapshot, orderBy } from "firebase/firestore";
 
 const COLORS = ["#008254", "#4ade80", "#60a5fa", "#fbbf24", "#f87171", "#a78bfa"];
 
@@ -22,10 +23,27 @@ export default function Reports() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // Real-time synchronization for Reports data
   useEffect(() => {
-    db.entities.Task.list("-entry_date", 1000).then(data => { setTasks(data); setLoading(false); });
+    const tasksRef = collection(db, "tasks");
+    const q = query(tasksRef, orderBy("entry_date", "desc"));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const taskData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setTasks(taskData);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching tasks for reports:", error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
+  // Aggregation Logic
   const monthlyData = Array.from({ length: 6 }, (_, i) => {
     const d = subMonths(new Date(), 5 - i);
     const label = format(d, "MMM yy");
@@ -58,7 +76,7 @@ export default function Reports() {
   const statusData = Object.entries(byStatus).map(([name, value]) => ({ name, value }));
 
   if (loading) return (
-    <div style={{ background: "var(--bg-black)", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#889995" }}>
+    <div style={{ background: "#050a09", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#889995" }}>
       Loading reports...
     </div>
   );
@@ -71,7 +89,7 @@ export default function Reports() {
   ];
 
   return (
-    <div style={{ background: "var(--bg-black)", minHeight: "100vh", padding: "28px 24px" }}>
+    <div style={{ background: "#050a09", minHeight: "100vh", padding: "28px 24px" }}>
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
         <div style={{ marginBottom: 28 }}>
           <h1 style={{ fontSize: 24, fontWeight: 800, color: "#c8d4d0" }}>Reports & Analytics</h1>
@@ -132,34 +150,7 @@ export default function Reports() {
           </div>
         </div>
 
-        {/* Category + Status */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
-          <div style={cardStyle}>
-            <h3 style={{ fontWeight: 600, color: "#c8d4d0", marginBottom: 16 }}>Tasks by Category</h3>
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <Pie data={catData} cx="50%" cy="50%" outerRadius={80} dataKey="value" label={({ name, value }) => `${name}: ${value}`} labelLine={{ stroke: "rgba(255,255,255,0.15)" }}>
-                  {catData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                </Pie>
-                <Tooltip {...tooltipStyle} />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          <div style={cardStyle}>
-            <h3 style={{ fontWeight: 600, color: "#c8d4d0", marginBottom: 16 }}>Status Breakdown</h3>
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <Pie data={statusData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value">
-                  {statusData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                </Pie>
-                <Tooltip {...tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 11, color: "#889995" }} />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Employee table */}
+        {/* Employee Performance Summary Table */}
         <div style={cardStyle}>
           <h3 style={{ fontWeight: 600, color: "#c8d4d0", marginBottom: 16 }}>Employee Performance Summary</h3>
           <div style={{ overflowX: "auto" }}>
@@ -174,22 +165,19 @@ export default function Reports() {
               <tbody>
                 {empData.map(({ name }) => {
                   const empTasks = tasks.filter(t => t.assigned_to === name);
-                  const done = empTasks.filter(t => t.status === "Completed").length;
-                  const active = empTasks.filter(t => !["Completed", "Cancelled"].includes(t.status)).length;
-                  const pct = empTasks.length > 0 ? Math.round((done / empTasks.length) * 100) : 0;
+                  const doneCount = empTasks.filter(t => t.status === "Completed").length;
+                  const activeCount = empTasks.filter(t => !["Completed", "Cancelled"].includes(t.status)).length;
+                  const pct = empTasks.length > 0 ? Math.round((doneCount / empTasks.length) * 100) : 0;
                   return (
-                    <tr key={name} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}
-                      onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.02)"}
-                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                    >
+                    <tr key={name} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
                       <td style={{ padding: "12px 12px", fontWeight: 500, color: "#c8d4d0" }}>{name}</td>
                       <td style={{ padding: "12px 12px", color: "#889995" }}>{empTasks.length}</td>
-                      <td style={{ padding: "12px 12px", color: "#4ade80" }}>{done}</td>
-                      <td style={{ padding: "12px 12px", color: "#60a5fa" }}>{active}</td>
+                      <td style={{ padding: "12px 12px", color: "#4ade80" }}>{doneCount}</td>
+                      <td style={{ padding: "12px 12px", color: "#60a5fa" }}>{activeCount}</td>
                       <td style={{ padding: "12px 12px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <div style={{ flex: 1, background: "rgba(255,255,255,0.06)", borderRadius: 99, height: 4 }}>
-                            <div style={{ background: "#008254", borderRadius: 99, height: 4, width: `${pct}%`, transition: "width 0.4s" }} />
+                            <div style={{ background: "#008254", borderRadius: 99, height: 4, width: `${pct}%` }} />
                           </div>
                           <span style={{ fontSize: 11, color: "#889995", minWidth: 30 }}>{pct}%</span>
                         </div>

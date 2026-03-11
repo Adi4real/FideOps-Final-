@@ -1,9 +1,10 @@
-const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
-
 import { useState, useEffect } from "react";
-
 import { format, isToday, isPast, parseISO, differenceInDays } from "date-fns";
 import { AlertTriangle, Clock, CalendarCheck, Search, RefreshCw, Pencil, Check, X, CalendarPlus, Download } from "lucide-react";
+
+// Firebase Imports
+import { db } from "../firebase"; 
+import { collection, query, onSnapshot, orderBy, doc, updateDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
 
 function makeGCalLink(task) {
   const date = task.follow_up_date ? task.follow_up_date.replace(/-/g, "") : format(new Date(), "yyyyMMdd");
@@ -43,7 +44,6 @@ function exportToExcel(tasks) {
 const ALL_STATUSES = ["Pending", "Under Process", "Waiting Client", "Completed", "Cancelled"];
 const ACTIVE_STATUSES = ["Pending", "Under Process", "Waiting Client"];
 
-// Row background colors based on status (inspired by image: red=pending, yellow=in-process, blue=waiting, green=completed)
 const ROW_BG = {
   "Pending":        "rgba(248,113,113,0.10)",
   "Under Process":  "rgba(251,191,36,0.09)",
@@ -89,10 +89,14 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
     if (editForm.status === "Completed" && task.status !== "Completed") {
       update.closure_date = format(new Date(), "yyyy-MM-dd");
     }
-    await db.entities.Task.update(task.id, update);
+    
+    // Firestore Update
+    const taskRef = doc(db, "tasks", task.id);
+    await updateDoc(taskRef, update);
+    
     setSaving(false);
     setEditing(false);
-    onStatusChange(task, editForm.status);
+    onStatusChange(); // Trigger parent reload/notification
   };
 
   const cellStyle = { padding: "11px 12px", verticalAlign: "middle" };
@@ -149,7 +153,7 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
             value={editing ? editForm.status : task.status}
             onChange={e => {
               if (editing) setEditForm(f => ({ ...f, status: e.target.value }));
-              else onStatusChange(task, e.target.value);
+              else onStatusChange(task.id, e.target.value);
             }}
             style={{ padding: "4px 8px", borderRadius: 8, fontSize: 11, fontWeight: 400, background: st.bg, border: `1px solid ${st.border}`, color: st.text, cursor: "pointer" }}
           >
@@ -179,7 +183,7 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
                 <a href={makeGCalLink(task)} target="_blank" rel="noopener noreferrer" style={{ padding: 5, borderRadius: 6, background: "rgba(66,133,244,0.1)", border: "1px solid rgba(66,133,244,0.25)", color: "#60a5fa", cursor: "pointer", display: "inline-flex", alignItems: "center" }} title="Add to Google Calendar"><CalendarPlus className="w-3.5 h-3.5" /></a>
                 <button onClick={() => setEditing(true)} style={{ padding: 5, borderRadius: 6, background: "rgba(0,130,84,0.1)", border: "1px solid rgba(0,130,84,0.2)", color: "#4ade80", cursor: "pointer" }} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
                 <button onClick={() => setExpanded(v => !v)} style={{ padding: 5, borderRadius: 6, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", color: "#889995", cursor: "pointer", fontSize: 10 }} title="Notes">···</button>
-                <button onClick={() => { if (window.confirm("Delete this task?")) onDelete(task); }} style={{ padding: 5, borderRadius: 6, background: "rgba(220,38,38,0.08)", border: "1px solid rgba(220,38,38,0.15)", color: "#f87171", cursor: "pointer" }} title="Delete"><X className="w-3.5 h-3.5" /></button>
+                <button onClick={() => { if (window.confirm("Delete this task?")) onDelete(task.id); }} style={{ padding: 5, borderRadius: 6, background: "rgba(220,38,38,0.08)", border: "1px solid rgba(220,38,38,0.15)", color: "#f87171", cursor: "pointer" }} title="Delete"><X className="w-3.5 h-3.5" /></button>
               </>
             )}
           </div>
@@ -198,7 +202,7 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
             <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
               <textarea rows={2} value={reviewNote} onChange={e => setReviewNote(e.target.value)} placeholder="Add reviewer notes..."
                 style={{ flex: 1, padding: "8px 12px", borderRadius: 8, background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", color: "#c8d4d0", fontSize: 12, resize: "none" }} />
-              <button onClick={() => onNotesUpdate(task, reviewNote)} style={{ padding: "8px 14px", borderRadius: 8, background: "#008254", color: "white", border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Save</button>
+              <button onClick={() => onNotesUpdate(task.id, reviewNote)} style={{ padding: "8px 14px", borderRadius: 8, background: "#008254", color: "white", border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Save</button>
             </div>
           </td>
         </tr>
@@ -214,31 +218,45 @@ export default function LiveTasks() {
   const [filterStatus, setFilterStatus] = useState("active");
   const [filterPriority, setFilterPriority] = useState("all");
   const [filterAssigned, setFilterAssigned] = useState("all");
-  const [filterUrgency, setFilterUrgency] = useState("all"); // all | overdue | today | upcoming
+  const [filterUrgency, setFilterUrgency] = useState("all"); 
 
-  const loadTasks = () => {
-    setLoading(true);
-    // ascending by follow_up_date
-    db.entities.Task.list("follow_up_date", 500).then(data => { setTasks(data); setLoading(false); });
-  };
+  // Firestore Real-time Listener
+  useEffect(() => {
+    const tasksRef = collection(db, "tasks");
+    const q = query(tasksRef, orderBy("follow_up_date", "asc"));
 
-  useEffect(() => { loadTasks(); }, []);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const taskData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setTasks(taskData);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching tasks: ", error);
+      setLoading(false);
+    });
 
-  const handleStatusChange = async (task, newStatus) => {
+    return () => unsubscribe();
+  }, []);
+
+  const handleStatusChange = async (taskId, newStatus) => {
+    const taskRef = doc(db, "tasks", taskId);
     const update = { status: newStatus };
-    if (newStatus === "Completed") update.closure_date = format(new Date(), "yyyy-MM-dd");
-    await db.entities.Task.update(task.id, update);
-    loadTasks();
+    if (newStatus === "Completed") {
+      update.closure_date = format(new Date(), "yyyy-MM-dd");
+    }
+    await updateDoc(taskRef, update);
   };
 
-  const handleNotesUpdate = async (task, reviewer_notes) => {
-    await db.entities.Task.update(task.id, { reviewer_notes });
-    loadTasks();
+  const handleNotesUpdate = async (taskId, reviewer_notes) => {
+    const taskRef = doc(db, "tasks", taskId);
+    await updateDoc(taskRef, { reviewer_notes });
   };
 
-  const handleDelete = async (task) => {
-    await db.entities.Task.delete(task.id);
-    loadTasks();
+  const handleDelete = async (taskId) => {
+    const taskRef = doc(db, "tasks", taskId);
+    await deleteDoc(taskRef);
   };
 
   const getUrgency = (task) => {
@@ -267,7 +285,6 @@ export default function LiveTasks() {
     );
   }
 
-  // Already sorted ascending from API; stable sort by urgency within that
   const overdue   = filtered.filter(t => getUrgency(t) === "overdue");
   const today     = filtered.filter(t => getUrgency(t) === "today");
   const upcoming  = filtered.filter(t => getUrgency(t) === "upcoming");
@@ -301,7 +318,7 @@ export default function LiveTasks() {
     <div style={{ background: "var(--bg-black)", minHeight: "100vh", padding: "28px 24px" }}>
       <div style={{ maxWidth: 1400, margin: "0 auto" }}>
         {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyBetween: "space-between", marginBottom: 20 }}>
           <div>
             <h1 style={{ fontSize: 24, fontWeight: 800, color: "#c8d4d0" }}>Live Tasks</h1>
             <p style={{ fontSize: 13, color: "#889995", marginTop: 4 }}>Daily task tracker — {filtered.length} tasks</p>
@@ -310,7 +327,7 @@ export default function LiveTasks() {
             <button onClick={() => exportToExcel(filtered)} style={{ padding: "8px 14px", borderRadius: 10, background: "rgba(0,130,84,0.12)", border: "1px solid rgba(0,130,84,0.3)", color: "#4ade80", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
               <Download className="w-3.5 h-3.5" /> Export Excel
             </button>
-            <button onClick={loadTasks} style={{ padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", color: "#889995", cursor: "pointer" }}>
+            <button onClick={() => {}} style={{ padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", color: "#889995", cursor: "pointer" }}>
               <RefreshCw className="w-4 h-4" />
             </button>
           </div>

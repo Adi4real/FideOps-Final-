@@ -8,14 +8,13 @@ const HEADERS = ["Lead Code", "Lead Name", "RM Assigned", "Branch", "Lead Source
 const EXAMPLE = ["LD-26-0001", "Sample Client", "Ujjwal", "Chennai Branch", "Referral", "Normal Lead", "Meeting In-Person", "New prospect"];
 
 const HEADER_MAP = {
-  "lead code": "lead_code", "lead_name": "lead_code",
-  "lead name": "lead_name", "lead_name": "lead_name",
-  "rm assigned": "rm_assigned", "rm_assigned": "rm_assigned",
-  "branch": "branch",
-  "lead source": "lead_source", "lead_source": "lead_source",
-  "lead category": "lead_category", "lead_category": "lead_category",
-  "action stage": "action_stage", "action_stage": "action_stage",
-  "notes": "notes",
+    "lead code": "lead_code",
+    "lead_code": "lead_code",
+    "lead name": "lead_name",
+    "lead_name": "lead_name",
+    "rm assigned": "rm_assigned",
+    "rm_assigned": "rm_assigned",
+    "branch": "branch",
 };
 
 function getBranch(rm) {

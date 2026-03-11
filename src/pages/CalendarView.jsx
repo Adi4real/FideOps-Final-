@@ -1,9 +1,10 @@
-const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
-
 import { useState, useEffect } from "react";
-
 import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek, addDays, isSameMonth, isToday, parseISO, isSameDay, addWeeks, subWeeks, addMonths, subMonths } from "date-fns";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
+
+// Firebase Imports
+import { db } from "../firebase"; 
+import { collection, query, onSnapshot, orderBy } from "firebase/firestore";
 
 const STATUS_COLOR = {
   "Pending":        "#fbbf24",
@@ -27,8 +28,25 @@ export default function CalendarView() {
   const [selected, setSelected] = useState(null);
   const [selectedDayTasks, setSelectedDayTasks] = useState([]);
 
+  // Firestore Real-time synchronization
   useEffect(() => {
-    db.entities.Task.list("-follow_up_date", 1000).then(d => { setTasks(d); setLoading(false); });
+    const tasksRef = collection(db, "tasks");
+    // Sort by follow_up_date for chronological order in views
+    const q = query(tasksRef, orderBy("follow_up_date", "desc"));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const taskData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setTasks(taskData);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching tasks for calendar:", error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   const allRMs = [...new Set(tasks.map(t => t.assigned_to).filter(Boolean))];
@@ -234,7 +252,7 @@ export default function CalendarView() {
         )}
 
         {loading ? (
-          <div style={{ textAlign: "center", padding: 80, color: "#889995" }}>Loading...</div>
+          <div style={{ textAlign: "center", padding: 80, color: "#889995" }}>Loading planner...</div>
         ) : (
           <div style={{ background: "#0a1612", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16, padding: 20 }}>
             {view === "month" && renderMonth()}
