@@ -79,7 +79,7 @@ export default function Layout({ children, currentPageName }) {
         <div className="px-6 py-5" style={{ borderBottom: "1px solid var(--border)" }}>
           <div className="flex items-center gap-3">
             <img
-              src="logo.png"
+              src="/logo.png"
               alt="FideloWealth"
               className="w-9 h-9 rounded-xl object-cover"
             />
