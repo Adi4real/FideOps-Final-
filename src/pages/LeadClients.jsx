@@ -32,11 +32,15 @@ function makeGCalLeadLink(lead) {
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
 }
 
-const LEAD_CATEGORIES = ["Normal Lead", "Strong Lead", "Meet Urgent", "Upcoming Meeting", "Financial Planning"];
+// Updated Categories
+const LEAD_CATEGORIES = ["Normal Lead", "Strong Lead"];
+
+// Updated Action Stages (Moved 3 from categories, removed Documentation Complete)
 const ACTION_STAGES = [
+  "Meet Urgent", "Upcoming Meeting", "Financial Planning",
   "Meeting In-Person", "Zoom Call", "Meeting minutes", "KYC Pending",
   "KYC Check", "KYC Modify", "NSE Form", "eNACH Mandate",
-  "Physical Mandate", "Physical KYC", "Documentation Complete", "Onboarding Completed"
+  "Physical Mandate", "Physical KYC", "Onboarding Completed"
 ];
 
 async function generateLeadCode(leads) {
@@ -54,15 +58,14 @@ async function generateLeadCode(leads) {
 const categoryColor = {
   "Normal Lead": { bg: "rgba(100,116,139,0.2)", text: "#94a3b8" },
   "Strong Lead": { bg: "rgba(0,130,84,0.2)", text: "#4ade80" },
-  "Meet Urgent": { bg: "rgba(220,38,38,0.2)", text: "#f87171" },
-  "Upcoming Meeting": { bg: "rgba(245,158,11,0.2)", text: "#fbbf24" },
-  "Financial Planning": { bg: "rgba(99,102,241,0.2)", text: "#a5b4fc" },
 };
 
 const stageColor = (stage) => {
   if (stage === "Onboarding Completed") return { bg: "rgba(0,130,84,0.25)", text: "#4ade80" };
   if (["KYC Pending", "KYC Check", "KYC Modify"].includes(stage)) return { bg: "rgba(245,158,11,0.2)", text: "#fbbf24" };
-  if (["Documentation Complete"].includes(stage)) return { bg: "rgba(99,102,241,0.2)", text: "#a5b4fc" };
+  if (stage === "Meet Urgent") return { bg: "rgba(220,38,38,0.2)", text: "#f87171" };
+  if (stage === "Upcoming Meeting") return { bg: "rgba(245,158,11,0.2)", text: "#fbbf24" };
+  if (stage === "Financial Planning") return { bg: "rgba(99,102,241,0.2)", text: "#a5b4fc" };
   return { bg: "rgba(255,255,255,0.06)", text: "#889995" };
 };
 
@@ -146,7 +149,6 @@ export default function LeadClients() {
       if (newStage === "Onboarding Completed") {
         setConverting(lead.id);
         
-        // 1. Create Client in Firestore
         const clientCode = lead.lead_code ? lead.lead_code.replace("LD-", "FW-C-") : `FW-C-${Date.now()}`;
         const clientRef = collection(db, "clients");
         const newClient = await addDoc(clientRef, {
@@ -159,7 +161,6 @@ export default function LeadClients() {
           converted_from_lead: lead.id
         });
 
-        // 2. Update Lead status to Converted
         const leadRef = doc(db, "leads", lead.id);
         await updateDoc(leadRef, {
           action_stage: newStage,

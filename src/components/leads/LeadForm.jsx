@@ -3,11 +3,15 @@ import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const RM_OPTIONS = ["Ujjwal", "Ujjwal and Manny", "Ujjwal and Joel", "Uday and Joel", "Uday", "Joel", "Manny", "Prince"];
-const LEAD_CATEGORIES = ["Normal Lead", "Strong Lead", "Meet Urgent", "Upcoming Meeting", "Financial Planning"];
+
+// Updated Categories
+const LEAD_CATEGORIES = ["Normal Lead", "Strong Lead"];
+
+// Updated Action Stages (Moved 3 from categories, removed Documentation Complete)
 const ACTION_STAGES = [
-  "Meeting In-Person", "Zoom Call", "Meeting minutes", "KYC Pending",
+  "Meet Urgent", "Upcoming Meeting","Meeting In-Person", "Financial Planning", "Zoom Call", "Meeting minutes", "KYC Pending",
   "KYC Check", "KYC Modify", "NSE Form", "eNACH Mandate",
-  "Physical Mandate", "Physical KYC", "Documentation Complete", "Onboarding Completed"
+  "Physical Mandate", "Physical KYC", "Onboarding Completed"
 ];
 
 function getBranch(rm) {
