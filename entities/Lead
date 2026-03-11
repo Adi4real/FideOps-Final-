@@ -1,0 +1,76 @@
+{
+  "name": "Lead",
+  "type": "object",
+  "properties": {
+    "lead_code": {
+      "type": "string",
+      "description": "Auto-generated lead code like LD-26-0001"
+    },
+    "lead_name": {
+      "type": "string"
+    },
+    "rm_assigned": {
+      "type": "string",
+      "enum": [
+        "Ujjwal",
+        "Ujjwal and Manny",
+        "Ujjwal and Joel",
+        "Uday and Joel",
+        "Uday",
+        "Joel",
+        "Manny",
+        "Prince"
+      ]
+    },
+    "branch": {
+      "type": "string"
+    },
+    "lead_source": {
+      "type": "string"
+    },
+    "lead_category": {
+      "type": "string",
+      "enum": [
+        "Normal Lead",
+        "Strong Lead",
+        "Meet Urgent",
+        "Upcoming Meeting",
+        "Financial Planning"
+      ]
+    },
+    "action_stage": {
+      "type": "string",
+      "enum": [
+        "Meeting In-Person",
+        "Zoom Call",
+        "Meeting minutes",
+        "KYC Pending",
+        "KYC Check",
+        "KYC Modify",
+        "NSE Form",
+        "eNACH Mandate",
+        "Physical Mandate",
+        "Physical KYC",
+        "Documentation Complete",
+        "Onboarding Completed"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "Active",
+        "Converted"
+      ],
+      "default": "Active"
+    },
+    "converted_client_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "lead_name"
+  ]
+}
