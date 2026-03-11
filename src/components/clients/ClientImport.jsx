@@ -132,31 +132,31 @@ export default function ClientImport({ onImportDone, onClose }) {
   };
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-5">
+    <div className="bg-black rounded-2xl shadow-sm border border-gray-100 p-6 space-y-5">
       <div className="flex items-center justify-between">
-        <h3 className="font-semibold text-gray-800">Import Clients from Excel / CSV</h3>
+        <h3 className="font-semibold text-black-500">Import Clients from Excel / CSV</h3>
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
       </div>
 
-      <div className="flex items-start gap-3 p-4 bg-green-50 rounded-xl border border-green-100">
+      <div className="bg-black flex items-start gap-3 p-4 bg-green-50 rounded-xl border border-green-100">
         <Download className="w-4 h-4 text-[#00765B] mt-0.5 flex-shrink-0" />
         <div className="flex-1">
-          <p className="text-sm font-medium text-gray-700">Step 1: Download the template</p>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <p className="text-sm font-medium text-white-700">Step 1: Download the template</p>
+          <p className="text-xs text-white-500 mt-0.5">
             Required columns: <span className="font-mono text-xs text-[#00765B]">{TEMPLATE_HEADERS.join(" | ")}</span>
           </p>
-          <p className="text-xs text-gray-400 mt-1">Client Code and Client Name are required. Existing records with matching Client Code will be updated.</p>
+          <p className="text-xs text-white-400 mt-1">Client Code and Client Name are required. Existing records with matching Client Code will be updated.</p>
         </div>
-        <Button variant="outline" size="sm" onClick={downloadTemplate} className="border-[#00765B] text-[#00765B] hover:bg-green-50 flex-shrink-0">
+        <Button variant="outline" size="sm" onClick={downloadTemplate} className="bg-black border-[#00765B] text-[#00765B] hover:bg-green-50 flex-shrink-0">
           Download Template
         </Button>
       </div>
 
       <div>
-        <p className="text-sm font-medium text-gray-700 mb-2">Step 2: Upload your file (.csv or .xlsx)</p>
-        <label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:border-[#00765B] hover:bg-green-50/30 transition-colors">
-          <Upload className="w-6 h-6 text-gray-300 mb-1" />
-          <span className="text-sm text-gray-400">{file ? file.name : "Click to select .xlsx or .csv file"}</span>
+        <p className="text-sm font-medium text-white-700 mb-2">Step 2: Upload your file (.csv or .xlsx)</p>
+        <label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-white-200 rounded-xl cursor-pointer hover:border-[#00765B] hover:bg-green-50/30 transition-colors">
+          <Upload className="w-6 h-6 text-white-300 mb-1" />
+          <span className="text-sm text-white-400">{file ? file.name : "Click to select .xlsx or .csv file"}</span>
           <input type="file" className="hidden" accept=".xlsx,.xls,.csv" onChange={e => setFile(e.target.files[0])} />
         </label>
       </div>

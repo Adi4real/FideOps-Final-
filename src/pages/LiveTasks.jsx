@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import { format, isToday, isPast, parseISO, differenceInDays } from "date-fns";
-import { AlertTriangle, Clock, CalendarCheck, Search, RefreshCw, Pencil, Check, X, CalendarPlus, Download } from "lucide-react";
+import { AlertTriangle, Clock, CalendarCheck, Search, RefreshCw, Pencil, Check, X, CalendarPlus, Download, ChevronDown } from "lucide-react";
 
 // Firebase Imports
 import { db } from "../firebase"; 
-import { collection, query, onSnapshot, orderBy, doc, updateDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
+import { collection, query, onSnapshot, orderBy, doc, updateDoc, deleteDoc, getDocs } from "firebase/firestore";
 
 function makeGCalLink(task) {
   const date = task.follow_up_date ? task.follow_up_date.replace(/-/g, "") : format(new Date(), "yyyyMMdd");
@@ -17,12 +17,19 @@ function makeGCalLink(task) {
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
 }
 
-function exportToExcel(tasks) {
+function exportToExcel(allTasks, selectedYear) {
+  // Filter by selected Financial Year
+  const filteredForExport = selectedYear === "All" 
+    ? allTasks 
+    : allTasks.filter(t => t.financial_year === selectedYear);
+
   const headers = ["Task ID","Financial Year","Entry Date","Client Code","Client Name","RM Assigned","Branch","Category","Action","Product Name","Amount","Priority","Assigned To","Follow-up Date","Channel","Status","Closure Date","Ageing (days)","Notes","Reviewer Notes"];
-  const rows = tasks.map(t => {
+  
+  const rows = filteredForExport.map(t => {
     let ageing = 0;
     if (t.status === "Completed" && t.closure_date && t.entry_date) ageing = differenceInDays(parseISO(t.closure_date), parseISO(t.entry_date));
     else if (t.entry_date) ageing = differenceInDays(new Date(), parseISO(t.entry_date));
+    
     return [
       t.task_id, t.financial_year, t.entry_date, t.client_code, t.client_name,
       t.rm_assigned, t.branch, t.category, t.action, t.product_name,
@@ -31,12 +38,13 @@ function exportToExcel(tasks) {
       (t.notes || "").replace(/"/g, '""'), (t.reviewer_notes || "").replace(/"/g, '""')
     ];
   });
+
   const csv = [headers, ...rows].map(r => r.map(v => `"${v ?? ""}"`).join(",")).join("\n");
   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `FideloOps_Tasks_${format(new Date(), "dd-MM-yyyy")}.csv`;
+  a.download = `FideloOps_Tasks_${selectedYear}_${format(new Date(), "dd-MM-yyyy")}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -89,14 +97,11 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
     if (editForm.status === "Completed" && task.status !== "Completed") {
       update.closure_date = format(new Date(), "yyyy-MM-dd");
     }
-    
-    // Firestore Update
     const taskRef = doc(db, "tasks", task.id);
     await updateDoc(taskRef, update);
-    
     setSaving(false);
     setEditing(false);
-    onStatusChange(); // Trigger parent reload/notification
+    onStatusChange(); 
   };
 
   const cellStyle = { padding: "11px 12px", verticalAlign: "middle" };
@@ -219,28 +224,45 @@ export default function LiveTasks() {
   const [filterPriority, setFilterPriority] = useState("all");
   const [filterAssigned, setFilterAssigned] = useState("all");
   const [filterUrgency, setFilterUrgency] = useState("all"); 
+  const [exportYear, setExportYear] = useState("2025-26");
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Firestore Real-time Listener
-  useEffect(() => {
+  const fetchTasks = () => {
+    setRefreshing(true);
     const tasksRef = collection(db, "tasks");
     const q = query(tasksRef, orderBy("follow_up_date", "asc"));
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    return onSnapshot(q, (snapshot) => {
       const taskData = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
       setTasks(taskData);
       setLoading(false);
+      setRefreshing(false);
     }, (error) => {
       console.error("Error fetching tasks: ", error);
       setLoading(false);
+      setRefreshing(false);
     });
+  };
 
+  useEffect(() => {
+    const unsubscribe = fetchTasks();
     return () => unsubscribe();
   }, []);
 
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    // Force a fresh read
+    const querySnapshot = await getDocs(collection(db, "tasks"));
+    const taskData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    setTasks(taskData);
+    setTimeout(() => setRefreshing(false), 500);
+  };
+
   const handleStatusChange = async (taskId, newStatus) => {
+    if (!taskId) return;
     const taskRef = doc(db, "tasks", taskId);
     const update = { status: newStatus };
     if (newStatus === "Completed") {
@@ -267,6 +289,8 @@ export default function LiveTasks() {
     return "upcoming";
   };
 
+  const financialYears = ["All", ...new Set(tasks.map(t => t.financial_year).filter(Boolean))].sort().reverse();
+
   let filtered = tasks.filter(t => {
     if (filterStatus === "active") return ACTIVE_STATUSES.includes(t.status);
     if (filterStatus !== "all") return t.status === filterStatus;
@@ -275,6 +299,7 @@ export default function LiveTasks() {
   if (filterPriority !== "all") filtered = filtered.filter(t => t.priority === filterPriority);
   if (filterAssigned !== "all") filtered = filtered.filter(t => t.assigned_to === filterAssigned);
   if (filterUrgency !== "all") filtered = filtered.filter(t => getUrgency(t) === filterUrgency);
+  
   if (search) {
     const q = search.toLowerCase();
     filtered = filtered.filter(t =>
@@ -291,9 +316,9 @@ export default function LiveTasks() {
   const assignees = [...new Set(tasks.map(t => t.assigned_to).filter(Boolean))];
 
   const groups = [
-    { label: "Overdue",  tasks: overdue },
-    { label: "Today",    tasks: today },
-    { label: "Upcoming", tasks: upcoming },
+    { label: "Overdue",   tasks: overdue },
+    { label: "Today",     tasks: today },
+    { label: "Upcoming",  tasks: upcoming },
   ];
 
   const selectStyle = {
@@ -315,20 +340,39 @@ export default function LiveTasks() {
   });
 
   return (
-    <div style={{ background: "var(--bg-black)", minHeight: "100vh", padding: "28px 24px" }}>
+    <div style={{ background: "#060c0a", minHeight: "100vh", padding: "28px 24px" }}>
       <div style={{ maxWidth: 1400, margin: "0 auto" }}>
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyBetween: "space-between", marginBottom: 20 }}>
+        
+        {/* Header - Export and Refresh brought to right */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div>
             <h1 style={{ fontSize: 24, fontWeight: 800, color: "#c8d4d0" }}>Live Tasks</h1>
             <p style={{ fontSize: 13, color: "#889995", marginTop: 4 }}>Daily task tracker — {filtered.length} tasks</p>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => exportToExcel(filtered)} style={{ padding: "8px 14px", borderRadius: 10, background: "rgba(0,130,84,0.12)", border: "1px solid rgba(0,130,84,0.3)", color: "#4ade80", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
-              <Download className="w-3.5 h-3.5" /> Export Excel
-            </button>
-            <button onClick={() => {}} style={{ padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", color: "#889995", cursor: "pointer" }}>
-              <RefreshCw className="w-4 h-4" />
+          
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", background: "rgba(0,130,84,0.12)", border: "1px solid rgba(0,130,84,0.3)", borderRadius: 10, overflow: "hidden" }}>
+                <select 
+                  value={exportYear} 
+                  onChange={(e) => setExportYear(e.target.value)}
+                  style={{ background: "transparent", border: "none", color: "#4ade80", fontSize: 11, padding: "0 8px", outline: "none", borderRight: "1px solid rgba(0,130,84,0.2)", cursor: "pointer" }}
+                >
+                  {financialYears.map(fy => <option key={fy} value={fy} style={{background: "#0a1612"}}>{fy}</option>)}
+                </select>
+                <button 
+                  onClick={() => exportToExcel(tasks, exportYear)} 
+                  style={{ padding: "8px 14px", background: "transparent", border: "none", color: "#4ade80", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}
+                >
+                  <Download className="w-3.5 h-3.5" /> Export Excel
+                </button>
+            </div>
+
+            <button 
+              onClick={handleRefresh} 
+              disabled={refreshing}
+              style={{ padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", color: "#889995", cursor: "pointer" }}
+            >
+              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
           </div>
         </div>
@@ -349,7 +393,7 @@ export default function LiveTasks() {
           </div>
           <select style={selectStyle} value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
             <option value="active">Active Only</option>
-            <option value="all">All Statuses</option>
+            <option value="all">All Statuses (Inc. Completed/Cancelled)</option>
             {ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           <select style={selectStyle} value={filterPriority} onChange={e => setFilterPriority(e.target.value)}>

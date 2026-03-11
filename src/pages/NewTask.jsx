@@ -13,7 +13,7 @@ const RM_LIST = ["Ujjwal", "Ujjwal and Manny", "Ujjwal and Joel", "Uday and Joel
 const CATEGORY_ACTIONS = {
   "Transaction": [
     "SIP Registration", "SIP Modification", "SIP Cancellation",
-    "Redemption", "Lump Sum Purchase", "Switch", "NFO Application"
+    "Redemption", "LumpSum Purchase", "Switch", "NFO Application"
   ],
   "Service": [
     "Account Statement", "Capital Gains Statement", "Nomination Update",
