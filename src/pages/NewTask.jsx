@@ -10,21 +10,62 @@ import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp } f
 
 const RM_LIST = ["Ujjwal", "Ujjwal and Manny", "Ujjwal and Joel", "Uday and Joel", "Uday", "Joel", "Manny", "Prince"];
 
+const RM_PHONES = {
+  "Ujjwal": "917010154937",
+  "Manny": "91XXXXXXXXXX",
+  "Uday": "91XXXXXXXXXX",
+  "Joel": "91XXXXXXXXXX",
+  "Prince": "919201091417",
+};
+
+// --- Helper: Convert Number to Indian Words ---
+function numberToWords(num) {
+  if (num === 0) return "Zero";
+  const a = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+  const convert = (n) => {
+    if (n < 20) return a[n];
+    if (n < 100) return b[Math.floor(n / 10)] + (n % 10 !== 0 ? " " + a[n % 10] : "");
+    if (n < 1000) return a[Math.floor(n / 100)] + " Hundred" + (n % 100 !== 0 ? " and " + convert(n % 100) : "");
+    if (n < 100000) return convert(Math.floor(n / 1000)) + " Thousand" + (n % 1000 !== 0 ? " " + convert(n % 1000) : "");
+    if (n < 10000000) return convert(Math.floor(n / 100000)) + " Lakh" + (n % 100000 !== 0 ? " " + convert(n % 100000) : "");
+    return convert(Math.floor(n / 10000000)) + " Crore" + (n % 10000000 !== 0 ? " " + convert(n % 10000000) : "");
+  };
+
+  return convert(parseInt(num)) + " Rupees Only";
+}
+
+function getBranch(rm) {
+  if (!rm) return "";
+  if (rm === "Ujjwal and Joel") return "Katni Branch";
+  if (rm.includes("Ujjwal") || rm.includes("Manny")) return "Chennai Branch";
+  if (rm.includes("Uday") || rm.includes("Joel") || rm.includes("Prince")) return "Katni Branch";
+  return rm;
+}
+
+function getRecipientPhone(rmName) {
+  if (rmName === "Ujjwal and Joel") return RM_PHONES["Ujjwal"]; 
+  if (rmName.includes("Ujjwal")) return RM_PHONES["Ujjwal"];
+  if (rmName.includes("Manny")) return RM_PHONES["Manny"];
+  return RM_PHONES[rmName] || "";
+}
+
+const POLICY_ACTIONS = [
+  "New Policy Purchase", "Policy Renewal", "Policy Servicing", "Policy Surrender",
+  "Policy Claim Assistance", "Policy Revival", "Policy Nominee Update", "Policy Detail Update / Correction"
+];
+
 const CATEGORY_ACTIONS = {
   "Transaction": [
     "SIP Registration", "SIP Modification", "SIP Cancellation",
     "Redemption", "Lumpsum Purchase", "Lumpsum & SIP", "Switch", "NFO Purchase"
   ],
-  "Service": [
-    "Account Statement", "Capital Gains Statement", "Nomination Update",
-    "Bank Mandate", "Other"
-  ],
-  "KYC": [
-    "KYC Update", "KYC Verification", "KYC Modification", "Physical KYC", "eKYC"
-  ],
-  "Portfolio Review": [
-    "SIP Switch", "SIP Stop", "SIP Top-up", "SIP Restart", "SIP Pause", "Scheme Switch", "Scheme Redemption", "Scheme Re-investment"
-  ],
+  "Service": ["Account Statement", "Capital Gains Statement", "Nomination Update", "Bank Mandate", "Other"],
+  "KYC": ["KYC Update", "KYC Verification", "KYC Modification", "Physical KYC", "eKYC"],
+  "Portfolio Review": ["SIP Switch", "SIP Stop", "SIP Top-up", "SIP Restart", "SIP Pause", "Scheme Switch", "Scheme Redemption", "Scheme Re-investment"],
+  "Term": POLICY_ACTIONS,
+  "Health": POLICY_ACTIONS,
 };
 
 const CHANNELS = ["Call", "WhatsApp", "Email", "Meeting"];
@@ -35,9 +76,7 @@ function getFinancialYear() {
   const year = now.getFullYear();
   return now.getMonth() >= 3 ? `${year}-${year + 1}` : `${year - 1}-${year}`;
 }
-function getFYShort() {
-  return getFinancialYear().split("-")[1].slice(2);
-}
+function getFYShort() { return getFinancialYear().split("-")[1].slice(2); }
 
 const iStyle = {
   width: "100%", padding: "10px 14px",
@@ -61,10 +100,8 @@ export default function NewTask() {
   const [clientSuggestions, setClientSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const suggestRef = useRef(null);
 
-  // For the Tag System
   const [productInput, setProductInput] = useState("");
   const [productTags, setProductTags] = useState([]);
 
@@ -81,8 +118,7 @@ export default function NewTask() {
     const fetchClients = async () => {
       const q = query(collection(db, "clients"), orderBy("client_name"));
       const querySnapshot = await getDocs(q);
-      const clientList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setClients(clientList);
+      setClients(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     };
     fetchClients();
   }, []);
@@ -91,8 +127,7 @@ export default function NewTask() {
     if (clientQuery.length >= 2) {
       const q = clientQuery.toLowerCase();
       const filtered = clients.filter(c =>
-        c.client_name?.toLowerCase().includes(q) ||
-        c.client_code?.toLowerCase().includes(q)
+        c.client_name?.toLowerCase().includes(q) || c.client_code?.toLowerCase().includes(q)
       ).slice(0, 8);
       setClientSuggestions(filtered);
       if (form.client_name !== clientQuery) setShowSuggestions(true);
@@ -108,14 +143,10 @@ export default function NewTask() {
   };
 
   const set = (k, v) => {
-    if (k === "category") {
-      setForm(f => ({ ...f, category: v, action: "" }));
-    } else {
-      setForm(f => ({ ...f, [k]: v }));
-    }
+    if (k === "category") setForm(f => ({ ...f, category: v, action: "" }));
+    else setForm(f => ({ ...f, [k]: v }));
   };
 
-  // --- Tag Logic ---
   const addTag = () => {
     const val = productInput.trim();
     if (val && !productTags.includes(val)) {
@@ -124,50 +155,44 @@ export default function NewTask() {
     }
   };
 
-  const removeTag = (tagToRemove) => {
-    setProductTags(productTags.filter(t => t !== tagToRemove));
-  };
+  const removeTag = (t) => setProductTags(productTags.filter(tag => tag !== t));
 
   const handleProductKeyDown = (e) => {
-    if (e.key === "Enter" || e.key === ",") {
-      e.preventDefault();
-      addTag();
-    }
+    if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addTag(); }
+  };
+
+  const getAmountLabel = () => (form.category === "Transaction" && form.action) ? `${form.action} Amount (₹)` : "Total Amount (₹)";
+
+  const triggerWhatsApp = async (taskData) => {
+    const phone = getRecipientPhone(taskData.assigned_to);
+    if (!phone) return;
+    const INSTANCE_ID = "instance165379"; 
+    const TOKEN = "4j68vvv8qw5unoo8";
+    const message = `*New Task Assigned!* 🚀\n\n*ID:* ${taskData.task_id}\n*Client:* ${taskData.client_name}\n*Work:* ${taskData.action}\n*Follow-up:* ${taskData.follow_up_date}\n\n_Please check the dashboard for details._`;
+    try {
+      const params = new URLSearchParams();
+      params.append('token', TOKEN); params.append('to', phone); params.append('body', message);
+      await fetch(`https://api.ultramsg.com/${INSTANCE_ID}/messages/chat`, { method: 'POST', body: params });
+    } catch (e) { console.error(e); }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
-
-    // Join tags into a single string for storage (separated by newlines or commas)
     const finalProductString = productTags.join("\n");
-
+    const taskBranch = getBranch(form.assigned_to); 
     try {
       const tasksRef = collection(db, "tasks");
       const q = query(tasksRef, orderBy("serial_number", "desc"), limit(1));
       const querySnapshot = await getDocs(q);
-      let serial = 1;
-      if (!querySnapshot.empty) serial = (querySnapshot.docs[0].data().serial_number || 0) + 1;
+      let serial = !querySnapshot.empty ? (querySnapshot.docs[0].data().serial_number || 0) + 1 : 1;
       const task_id = `FW-${getFYShort()}-${String(serial).padStart(4, "0")}`;
-
-      await addDoc(collection(db, "tasks"), { 
-        ...form, 
-        product_name: finalProductString, // Saving the processed tags
-        amount: form.amount ? parseFloat(form.amount) : null, 
-        serial_number: serial, 
-        task_id,
-        created_at: serverTimestamp()
-      });
-
-      setSaved(true);
-      setTimeout(() => navigate(createPageUrl("LiveTasks")), 1200);
-    } catch (error) {
-      console.error(error);
-      setSaving(false);
-    }
+      const newTaskData = { ...form, branch: taskBranch, product_name: finalProductString, amount: form.amount ? parseFloat(form.amount) : null, serial_number: serial, task_id, created_at: serverTimestamp() };
+      await addDoc(collection(db, "tasks"), newTaskData);
+      await triggerWhatsApp(newTaskData);
+      navigate(createPageUrl("LiveTasks"));
+    } catch (error) { setSaving(false); console.error(error); }
   };
-
-  const actions = CATEGORY_ACTIONS[form.category] || [];
 
   return (
     <div style={{ background: "var(--bg-black)", minHeight: "100vh", padding: "32px 24px" }}>
@@ -198,7 +223,6 @@ export default function NewTask() {
                     </div>
                   )}
                 </div>
-                {/* Other client fields... (kept identical to your original for brevity) */}
                 <div><label style={labelStyle}>Client Code</label><input style={{...iStyle, opacity: 0.6}} value={form.client_code} readOnly /></div>
                 <div><label style={labelStyle}>RM Assigned</label><input style={{...iStyle, opacity: 0.6}} value={form.rm_assigned} readOnly /></div>
                 <div><label style={labelStyle}>Branch</label><input style={{...iStyle, opacity: 0.6}} value={form.branch} readOnly /></div>
@@ -220,47 +244,37 @@ export default function NewTask() {
                   <label style={labelStyle}>Action *</label>
                   <select style={iStyle} value={form.action} onChange={e => set("action", e.target.value)} required>
                     <option value="">Select action...</option>
-                    {actions.map(a => <option key={a} value={a}>{a}</option>)}
+                    {CATEGORY_ACTIONS[form.category]?.map(a => <option key={a} value={a}>{a}</option>)}
                   </select>
                 </div>
 
-                {/* UPDATED: Product Tag Input */}
                 <div style={{ gridColumn: "1 / -1" }}>
-                  <label style={labelStyle}>Product Names (Type comma or Enter to add)</label>
-                  <div style={{ position: "relative" }}>
-                    <input 
-                      style={iStyle} 
-                      placeholder="e.g. WhiteOak Mid, DSP MAF..." 
-                      value={productInput}
-                      onChange={e => setProductInput(e.target.value)}
-                      onKeyDown={handleProductKeyDown}
-                      onBlur={addTag}
-                    />
-                  </div>
-                  
-                  {/* Tag Display Area */}
+                  <label style={labelStyle}>Product Names</label>
+                  <input style={iStyle} placeholder="Type comma or Enter to add" value={productInput} onChange={e => setProductInput(e.target.value)} onKeyDown={handleProductKeyDown} onBlur={addTag} />
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
                     {productTags.map((tag, idx) => (
-                      <div key={idx} style={{ 
-                        display: "flex", alignItems: "center", gap: 6, 
-                        background: "rgba(0,130,84,0.15)", border: "1px solid rgba(0,130,84,0.3)", 
-                        padding: "4px 10px", borderRadius: 8, color: "#4ade80", fontSize: 12, fontWeight: 600 
-                      }}>
-                        {tag}
-                        <button type="button" onClick={() => removeTag(tag)} style={{ background: "transparent", border: "none", color: "#f87171", cursor: "pointer", display: "flex", padding: 0 }}>
-                          <X className="w-3.5 h-3.5" />
-                        </button>
+                      <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(0,130,84,0.15)", border: "1px solid rgba(0,130,84,0.3)", padding: "4px 10px", borderRadius: 8, color: "#4ade80", fontSize: 12, fontWeight: 600 }}>
+                        {tag} <X className="w-3.5 h-3.5 cursor-pointer" onClick={() => removeTag(tag)} />
                       </div>
                     ))}
                   </div>
                 </div>
 
-                <div><label style={labelStyle}>Total Amount (₹)</label><input type="number" style={iStyle} placeholder="Optional" value={form.amount} onChange={e => set("amount", e.target.value)} /></div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <label style={labelStyle}>{getAmountLabel()}</label>
+                  <input type="number" style={iStyle} placeholder="Optional" value={form.amount} onChange={e => set("amount", e.target.value)} />
+                  {form.amount && (
+                    <p style={{ fontSize: 11, color: "#4ade80", marginTop: 6, fontWeight: 600, fontStyle: "italic" }}>
+                      {numberToWords(form.amount)}
+                    </p>
+                  )}
+                </div>
+
                 <div style={{ gridColumn: "1 / -1" }}><label style={labelStyle}>Notes</label><textarea rows={3} style={iStyle} value={form.notes} onChange={e => set("notes", e.target.value)} /></div>
               </div>
             </div>
 
-            {/* Assignment Section */}
+            {/* Assignment & Follow-up */}
             <div>
               <p style={sectionLabel}>Assignment & Follow-up</p>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>

@@ -53,6 +53,7 @@ export default function CalendarView() {
   const [current, setCurrent] = useState(new Date());
   const [selected, setSelected] = useState(null);
   const [selectedDayData, setSelectedDayData] = useState({ dayTasks: [], holiday: null });
+  const [expandedTaskId, setExpandedTaskId] = useState(null); // Expansion state
 
   useEffect(() => {
     const tasksRef = collection(db, "tasks");
@@ -80,6 +81,7 @@ export default function CalendarView() {
 
   const openDay = (date) => {
     setSelected(date);
+    setExpandedTaskId(null); // Reset expansion when opening new day
     setSelectedDayData(getDayData(tasks, date));
   };
 
@@ -270,9 +272,14 @@ export default function CalendarView() {
 
       {/* Selected Day Modal */}
       {selected && view !== "day" && (
-        <div className="fixed inset-0 bg-brand-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4" onClick={() => setSelected(null)}>
+        <div 
+          className="fixed inset-0 bg-brand-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4" 
+          onClick={() => { setSelected(null); setExpandedTaskId(null); }}
+        >
           <div className="glass-surface max-w-xl w-full p-8 shadow-2xl relative" onClick={e => e.stopPropagation()}>
-            <button onClick={() => setSelected(null)} className="absolute top-6 right-6 text-white/40 hover:text-white"><X /></button>
+            <button onClick={() => { setSelected(null); setExpandedTaskId(null); }} className="absolute top-6 right-6 text-white/40 hover:text-white transition-colors">
+              <X />
+            </button>
             
             <div className="mb-8">
               <h3 className="text-2xl font-black text-white">{format(selected, "do MMMM, yyyy")}</h3>
@@ -284,17 +291,64 @@ export default function CalendarView() {
               )}
             </div>
 
-            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+            <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
               {selectedDayData.dayTasks.length > 0 ? (
-                selectedDayData.dayTasks.map(t => (
-                  <div key={t.id} className="p-4 rounded-xl bg-white/5 border border-white/10 border-l-4 transition-all hover:bg-white/10" style={{ borderLeftColor: rmColorMap[t.assigned_to] }}>
-                    <div className="flex justify-between items-start mb-2">
-                      <p className="text-xs font-bold text-white">{t.client_name}</p>
-                      <span className="text-[9px] font-mono text-brand-green">{t.task_id}</span>
+                selectedDayData.dayTasks.map(t => {
+                  const isExpanded = expandedTaskId === t.id;
+                  return (
+                    <div 
+                      key={t.id} 
+                      className={`p-4 rounded-xl border border-white/10 border-l-4 transition-all cursor-pointer ${isExpanded ? 'bg-white/10 ring-1 ring-brand-green/30' : 'bg-white/5 hover:bg-white/10'}`} 
+                      style={{ borderLeftColor: rmColorMap[t.assigned_to] }}
+                      onClick={() => setExpandedTaskId(isExpanded ? null : t.id)}
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <p className="text-sm font-bold text-white">{t.client_name}</p>
+                        <span className="text-[9px] font-mono font-bold text-brand-green">{t.task_id}</span>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <span 
+                          className="text-[8px] font-black px-1.5 py-0.5 rounded-sm uppercase" 
+                          style={{ background: `${STATUS_COLOR[t.status]}20`, color: STATUS_COLOR[t.status] }}
+                        >
+                          {t.status}
+                        </span>
+                        <p className="text-[10px] text-white/40 font-bold uppercase tracking-wider">{t.assigned_to} • {t.action}</p>
+                      </div>
+
+                      {/* Expanded Section */}
+                      {isExpanded && (
+                        <div className="mt-4 pt-4 border-t border-white/10 space-y-3">
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <p className="text-[8px] font-bold text-[#556660] uppercase mb-1">Category</p>
+                              <p className="text-xs text-white/80">{t.category}</p>
+                            </div>
+                            <div>
+                              <p className="text-[8px] font-bold text-[#556660] uppercase mb-1">Amount</p>
+                              <p className="text-xs text-brand-green font-bold">₹{t.amount || "0"}</p>
+                            </div>
+                            <div>
+                              <p className="text-[8px] font-bold text-[#556660] uppercase mb-1">Channel</p>
+                              <p className="text-xs text-white/80">{t.channel || "Not Specified"}</p>
+                            </div>
+                            <div>
+                              <p className="text-[8px] font-bold text-[#556660] uppercase mb-1">Priority</p>
+                              <p className="text-xs text-white/80">{t.priority}</p>
+                            </div>
+                          </div>
+                          {t.notes && (
+                            <div className="bg-brand-black/40 p-3 rounded-lg">
+                              <p className="text-[8px] font-bold text-[#556660] uppercase mb-1">Notes</p>
+                              <p className="text-xs text-white/60 italic leading-relaxed">{t.notes}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <p className="text-[10px] text-white/40 font-bold uppercase tracking-wider">{t.assigned_to} • {t.category} • {t.action}</p>
-                  </div>
-                ))
+                  );
+                })
               ) : (
                 <p className="text-sm text-white/20 italic text-center py-10">No client service tasks assigned for this date.</p>
               )}
