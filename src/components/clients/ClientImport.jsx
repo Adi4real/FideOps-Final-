@@ -36,14 +36,16 @@ const HEADER_MAP = {
   "tax status": "tax_status",
   "holding nature": "holding_nature",
   "xsip registration number": "xsip_reg_no",
+  "xsip registration no": "xsip_reg_no", 
+  "xsip registration no.": "xsip_reg_no",
   "xsip reg no": "xsip_reg_no",
   "scheme name": "scheme_name",
   "frequency type": "frequency_type",
   "start date": "start_date",
   "end date": "end_date",
   "installment amount": "installment_amount",
-  "installments amount": "installment_amount", // Added plural fallback
-  "amount": "installment_amount", // Added generic fallback
+  "installments amount": "installment_amount", 
+  "amount": "installment_amount", 
   "folio number": "folio_number",
   "rm assigned": "rm_assigned",
   "branch": "branch",
@@ -53,9 +55,21 @@ const HEADER_MAP = {
 // Helper: Safely extracts numbers from an xSIP string to ensure strict matching
 function parseXSIPAsNumber(val) {
   if (!val || val === "-" || String(val).trim() === "") return null;
-  // Extract only the digits from the text (e.g. "XSIP-12345" becomes "12345")
-  const numericPart = String(val).replace(/\D/g, '');
-  return numericPart.length > 0 ? numericPart : String(val).trim();
+  
+  let strVal = String(val).trim();
+  
+  // Safety net: If Excel accidentally exports the scientific notation (e.g. "2.02E+14"), expand it back to a flat string
+  if (strVal.toUpperCase().includes("E")) {
+    try {
+      strVal = Number(strVal).toLocaleString('fullwide', { useGrouping: false });
+    } catch (e) {
+      // Ignore conversion errors
+    }
+  }
+  
+  // Extract only the digits from the text (removes accidental spaces, dashes, etc.)
+  const numericPart = strVal.replace(/\D/g, '');
+  return numericPart.length > 0 ? numericPart : strVal;
 }
 
 function parseCSV(text) {
@@ -81,7 +95,7 @@ async function parseExcel(file) {
   const firstSheetName = workbook.SheetNames[0];
   const worksheet = workbook.Sheets[firstSheetName];
   
-  const json = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+  const json = XLSX.utils.sheet_to_json(worksheet, { defval: "", raw: true });
 
   return json.map(row => {
     const obj = {};
@@ -134,14 +148,14 @@ export default function ClientImport({ onImportDone, onClose }) {
         const holding = row.holding_nature ? String(row.holding_nature).trim().toUpperCase() : "-";
 
         // Find existing documents for this client code
-        const codeMatches = inMemoryDB.filter(c => c.client_code === code);
+        const codeMatches = inMemoryDB.filter(c => String(c.client_code).trim() === code);
         let targetDoc = null;
 
         if (codeMatches.length > 0) {
+          targetDoc = codeMatches[0];
           if (tax !== "-") {
-            targetDoc = codeMatches.find(c => c.tax_status === tax);
-          } else {
-            targetDoc = codeMatches[0];
+            const exactMatch = codeMatches.find(c => c.tax_status === tax);
+            if (exactMatch) targetDoc = exactMatch;
           }
         }
 
@@ -150,7 +164,6 @@ export default function ClientImport({ onImportDone, onClose }) {
         
         let investmentData = null;
         if (hasInv) {
-          // Parse xSIP strictly as a number to ensure we don't duplicate it later
           const parsedXSIP = parseXSIPAsNumber(row.xsip_reg_no);
           const finalXSIP = parsedXSIP ? parsedXSIP : `UNKNOWN-${Math.floor(Math.random()*10000)}`;
 
@@ -169,7 +182,6 @@ export default function ClientImport({ onImportDone, onClose }) {
         }
 
         if (targetDoc) {
-          // Update the found document properties if the new file contains them
           if (tax !== "-") targetDoc.tax_status = tax;
           if (holding !== "-") targetDoc.holding_nature = holding;
           if (row.rm_assigned && row.rm_assigned !== "-") targetDoc.rm_assigned = row.rm_assigned;
@@ -179,11 +191,20 @@ export default function ClientImport({ onImportDone, onClose }) {
           if (investmentData) {
             if (!targetDoc.investments) targetDoc.investments = [];
             
-            // STRICT MATCHING: Find if the investment already exists by xSIP Number
-            const idx = targetDoc.investments.findIndex(i => 
-              !i.xsip_reg_no.startsWith("UNKNOWN") && 
-              i.xsip_reg_no === investmentData.xsip_reg_no
-            );
+            // STRICT MATCHING: Check if investment exists using xSIP AND Scheme Name
+            const idx = targetDoc.investments.findIndex(i => {
+              const hasValidXSIP = !i.xsip_reg_no.startsWith("UNKNOWN") && !investmentData.xsip_reg_no.startsWith("UNKNOWN");
+              
+              if (hasValidXSIP) {
+                // Match by BOTH xSIP Number AND Scheme Name (Prevents overwriting cart transactions)
+                return i.xsip_reg_no === investmentData.xsip_reg_no && i.scheme_name === investmentData.scheme_name;
+              } else {
+                // Lumpsum Fallback: Match by Folio + Scheme + Amount to prevent duplicates on re-upload
+                return i.folio_number === investmentData.folio_number && 
+                       i.scheme_name === investmentData.scheme_name && 
+                       i.installment_amount === investmentData.installment_amount;
+              }
+            });
 
             if (idx >= 0) {
               // If it exists, UPDATE the specific fields but don't duplicate the array
@@ -253,7 +274,7 @@ export default function ClientImport({ onImportDone, onClose }) {
         <Download className="w-4 h-4 text-brand-green mt-0.5 flex-shrink-0" />
         <div className="flex-1">
           <p className="text-sm font-medium text-[#c8d4d0]">Step 1: Download the template</p>
-          <p className="text-xs text-[#889995] mt-0.5">The system uses the <span className="font-bold text-white">xSIP Registration Number</span> to track individual investments. If you upload data with an existing xSIP number, it will securely update the existing record instead of creating a duplicate.</p>
+          <p className="text-xs text-[#889995] mt-0.5">The system matches funds by <span className="font-bold text-white">xSIP + Scheme Name</span>. This safely handles "Cart" transactions where multiple funds share the same xSIP Registration Number.</p>
         </div>
         <button onClick={downloadTemplate} className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-brand-green text-brand-green hover:bg-brand-green hover:text-white transition-all flex-shrink-0">
           Download Template
