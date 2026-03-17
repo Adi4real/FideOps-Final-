@@ -6,14 +6,16 @@ import { db } from "../../firebase";
 import { collection, getDocs, doc, addDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 
 const TEMPLATE_HEADERS = [
-  "Client Code", "Client Name", "xSIP Registration Number", "Holding Nature", "Scheme Name", 
-  "Frequency Type", "Start Date", "End Date", "Installment Amount", "Folio Number", 
+  "Client Code", "Client Name", "Tax Status", "Holding Nature", 
+  "Folio Number", "xSIP Registration Number", "Scheme Name", 
+  "Frequency Type", "Start Date", "End Date", "Installment Amount", 
   "RM Assigned", "Branch", "Notes"
 ];
 
 const TEMPLATE_EXAMPLE = [
-  "PAN1234567", "Rajesh Mehta", "XSIP-998877", "Single", "HDFC Bluechip", 
-  "Monthly", "2024-01-01", "2034-01-01", "5000", "FOLIO98765", 
+  "PAN1234567", "Rajesh Mehta", "INDIVIDUAL", "SINGLE", 
+  "FOLIO98765", "99887766", "HDFC Bluechip", 
+  "Monthly", "2024-01-01", "2034-01-01", "5000", 
   "Priya Sharma", "Mumbai", "HNI client"
 ];
 
@@ -31,18 +33,30 @@ function downloadTemplate() {
 const HEADER_MAP = {
   "client code": "client_code",
   "client name": "client_name",
-  "xsip registration number": "xsip_reg_no",
+  "tax status": "tax_status",
   "holding nature": "holding_nature",
+  "xsip registration number": "xsip_reg_no",
+  "xsip reg no": "xsip_reg_no",
   "scheme name": "scheme_name",
   "frequency type": "frequency_type",
   "start date": "start_date",
   "end date": "end_date",
   "installment amount": "installment_amount",
+  "installments amount": "installment_amount", // Added plural fallback
+  "amount": "installment_amount", // Added generic fallback
   "folio number": "folio_number",
   "rm assigned": "rm_assigned",
   "branch": "branch",
   "notes": "notes",
 };
+
+// Helper: Safely extracts numbers from an xSIP string to ensure strict matching
+function parseXSIPAsNumber(val) {
+  if (!val || val === "-" || String(val).trim() === "") return null;
+  // Extract only the digits from the text (e.g. "XSIP-12345" becomes "12345")
+  const numericPart = String(val).replace(/\D/g, '');
+  return numericPart.length > 0 ? numericPart : String(val).trim();
+}
 
 function parseCSV(text) {
   const lines = text.trim().split(/\r?\n/);
@@ -50,17 +64,15 @@ function parseCSV(text) {
 
   const rawHeaders = lines[0].split(",").map(h => h.trim().replace(/^["']|["']$/g, "").toLowerCase());
 
-  return lines.slice(1)
-    .map(line => {
-      const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
-      const obj = {};
-      rawHeaders.forEach((header, i) => {
-        const mappedKey = HEADER_MAP[header];
-        if (mappedKey) obj[mappedKey] = values[i] || ""; 
-      });
-      return obj;
-    })
-    .filter(row => row.client_code && row.client_name);
+  return lines.slice(1).map(line => {
+    const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
+    const obj = {};
+    rawHeaders.forEach((header, i) => {
+      const mappedKey = HEADER_MAP[header];
+      if (mappedKey) obj[mappedKey] = values[i] || ""; 
+    });
+    return obj;
+  }).filter(row => row.client_code && row.client_name);
 }
 
 async function parseExcel(file) {
@@ -76,9 +88,7 @@ async function parseExcel(file) {
     Object.keys(row).forEach(key => {
       const cleanHeader = key.trim().toLowerCase();
       const mappedKey = HEADER_MAP[cleanHeader];
-      if (mappedKey) {
-        obj[mappedKey] = String(row[key]).trim();
-      }
+      if (mappedKey) obj[mappedKey] = String(row[key]).trim();
     });
     return obj;
   }).filter(row => row.client_code && row.client_name);
@@ -99,114 +109,131 @@ export default function ClientImport({ onImportDone, onClose }) {
     const isExcel = file.name.toLowerCase().endsWith(".xlsx") || file.name.toLowerCase().endsWith(".xls");
 
     if (!isCSV && !isExcel) {
-      setStatus("error");
-      setError("Please upload a .csv or .xlsx file.");
-      return;
+      setStatus("error"); setError("Please upload a .csv or .xlsx file."); return;
     }
 
     try {
-      let rawRows = [];
-      if (isCSV) {
-        const text = await file.text();
-        rawRows = parseCSV(text);
-      } else if (isExcel) {
-        rawRows = await parseExcel(file);
-      }
-
+      let rawRows = isCSV ? parseCSV(await file.text()) : await parseExcel(file);
       if (!rawRows.length) {
-        setStatus("error");
-        setError("No valid client records found. Check headers.");
-        return;
+        setStatus("error"); setError("No valid client records found. Check headers."); return;
       }
 
-      // --- STEP 1: Group rows by Client Code ---
-      const groupedClients = {};
-      
-      rawRows.forEach(row => {
-        const code = row.client_code ? String(row.client_code).trim() : "-";
-        if (code === "-") return;
+      // 1. Fetch current DB state into memory
+      const clientsRef = collection(db, "clients");
+      const snapshot = await getDocs(clientsRef);
+      const inMemoryDB = snapshot.docs.map(d => ({ id: d.id, isNew: false, isModified: false, ...d.data() }));
 
-        if (!groupedClients[code]) {
-          groupedClients[code] = {
-            client_code: code,
-            client_name: row.client_name ? String(row.client_name).trim() : "-",
-            rm_assigned: row.rm_assigned ? String(row.rm_assigned).trim() : "-",
-            branch: row.branch ? String(row.branch).trim() : "-",
-            notes: row.notes ? String(row.notes).trim() : "-",
-            investments: [] // Initialize empty array for investments
+      let created = 0, updated = 0, failed = 0;
+
+      // 2. Process rows and map them intelligently to existing docs
+      for (const row of rawRows) {
+        const code = row.client_code ? String(row.client_code).trim() : "-";
+        if (code === "-" || !row.client_name) { failed++; continue; }
+
+        const tax = row.tax_status ? String(row.tax_status).trim().toUpperCase() : "-";
+        const holding = row.holding_nature ? String(row.holding_nature).trim().toUpperCase() : "-";
+
+        // Find existing documents for this client code
+        const codeMatches = inMemoryDB.filter(c => c.client_code === code);
+        let targetDoc = null;
+
+        if (codeMatches.length > 0) {
+          if (tax !== "-") {
+            targetDoc = codeMatches.find(c => c.tax_status === tax);
+          } else {
+            targetDoc = codeMatches[0];
+          }
+        }
+
+        // Determine if the row has any investment data
+        const hasInv = row.scheme_name || row.folio_number || row.xsip_reg_no || row.installment_amount;
+        
+        let investmentData = null;
+        if (hasInv) {
+          // Parse xSIP strictly as a number to ensure we don't duplicate it later
+          const parsedXSIP = parseXSIPAsNumber(row.xsip_reg_no);
+          const finalXSIP = parsedXSIP ? parsedXSIP : `UNKNOWN-${Math.floor(Math.random()*10000)}`;
+
+          // Extract amount cleanly (removes commas if any were left in excel formatting)
+          let cleanAmount = row.installment_amount ? String(row.installment_amount).replace(/,/g, '').trim() : "-";
+
+          investmentData = {
+            xsip_reg_no: finalXSIP,
+            folio_number: row.folio_number ? String(row.folio_number).trim() : "-",
+            scheme_name: row.scheme_name ? String(row.scheme_name).trim() : "-",
+            frequency_type: row.frequency_type ? String(row.frequency_type).trim() : "-",
+            start_date: row.start_date ? String(row.start_date).trim() : "-",
+            end_date: row.end_date ? String(row.end_date).trim() : "-",
+            installment_amount: cleanAmount,
           };
         }
 
-        // Generate a random fallback ID if xSIP is missing so it doesn't overwrite other missing ones
-        const xsip = row.xsip_reg_no ? String(row.xsip_reg_no).trim() : `UNKNOWN-${Math.floor(Math.random()*10000)}`;
+        if (targetDoc) {
+          // Update the found document properties if the new file contains them
+          if (tax !== "-") targetDoc.tax_status = tax;
+          if (holding !== "-") targetDoc.holding_nature = holding;
+          if (row.rm_assigned && row.rm_assigned !== "-") targetDoc.rm_assigned = row.rm_assigned;
+          if (row.branch && row.branch !== "-") targetDoc.branch = row.branch;
+          if (row.notes && row.notes !== "-") targetDoc.notes = row.notes;
 
-        groupedClients[code].investments.push({
-          xsip_reg_no: xsip,
-          holding_nature: row.holding_nature ? String(row.holding_nature).trim() : "-",
-          scheme_name: row.scheme_name ? String(row.scheme_name).trim() : "-",
-          frequency_type: row.frequency_type ? String(row.frequency_type).trim() : "-",
-          start_date: row.start_date ? String(row.start_date).trim() : "-",
-          end_date: row.end_date ? String(row.end_date).trim() : "-",
-          installment_amount: row.installment_amount ? String(row.installment_amount).trim() : "-",
-          folio_number: row.folio_number ? String(row.folio_number).trim() : "-"
-        });
-      });
+          if (investmentData) {
+            if (!targetDoc.investments) targetDoc.investments = [];
+            
+            // STRICT MATCHING: Find if the investment already exists by xSIP Number
+            const idx = targetDoc.investments.findIndex(i => 
+              !i.xsip_reg_no.startsWith("UNKNOWN") && 
+              i.xsip_reg_no === investmentData.xsip_reg_no
+            );
 
-      // --- STEP 2: Fetch Existing Database ---
-      const clientsRef = collection(db, "clients");
-      const snapshot = await getDocs(clientsRef);
-      
-      const existingMap = {};
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        if (data.client_code) {
-          existingMap[data.client_code] = { id: docSnap.id, data };
-        }
-      });
-
-      let created = 0, updated = 0;
-
-      // --- STEP 3: Merge and Save ---
-      for (const code of Object.keys(groupedClients)) {
-        const newClientData = groupedClients[code];
-        const existingRecord = existingMap[code];
-
-        if (existingRecord) {
-          // Merge investments
-          let mergedInvestments = [...(existingRecord.data.investments || [])];
-          
-          newClientData.investments.forEach(newInv => {
-            const matchIndex = mergedInvestments.findIndex(i => !i.xsip_reg_no.startsWith("UNKNOWN") && i.xsip_reg_no === newInv.xsip_reg_no);
-            if (matchIndex >= 0) {
-              mergedInvestments[matchIndex] = newInv; // Update existing
+            if (idx >= 0) {
+              // If it exists, UPDATE the specific fields but don't duplicate the array
+              targetDoc.investments[idx] = {
+                ...targetDoc.investments[idx],
+                ...investmentData,
+                scheme_name: investmentData.scheme_name !== "-" ? investmentData.scheme_name : targetDoc.investments[idx].scheme_name,
+                installment_amount: investmentData.installment_amount !== "-" ? investmentData.installment_amount : targetDoc.investments[idx].installment_amount,
+                folio_number: investmentData.folio_number !== "-" ? investmentData.folio_number : targetDoc.investments[idx].folio_number,
+              };
             } else {
-              mergedInvestments.push(newInv); // Add new
+              // If it does NOT exist, push it as a new investment
+              targetDoc.investments.push(investmentData); 
             }
-          });
-
-          const docRef = doc(db, "clients", existingRecord.id);
-          await updateDoc(docRef, { 
-            ...newClientData, 
-            investments: mergedInvestments,
-            updated_at: serverTimestamp() 
-          });
-          updated++;
+          }
+          targetDoc.isModified = true;
         } else {
-          // Create new client with investments array
-          await addDoc(collection(db, "clients"), { 
-            ...newClientData, 
-            created_at: serverTimestamp() 
-          });
-          created++;
+          // Create a new document in memory
+          const newDoc = {
+            id: `new_${Math.random()}`,
+            isNew: true,
+            isModified: true,
+            client_code: code,
+            client_name: row.client_name ? String(row.client_name).trim() : "-",
+            tax_status: tax,
+            holding_nature: holding,
+            rm_assigned: row.rm_assigned ? String(row.rm_assigned).trim() : "-",
+            branch: row.branch ? String(row.branch).trim() : "-",
+            notes: row.notes ? String(row.notes).trim() : "-",
+            investments: investmentData ? [investmentData] : []
+          };
+          inMemoryDB.push(newDoc);
         }
       }
 
-      setResult({ created, updated, failed: 0, total: rawRows.length });
+      // 3. Commit modifications to Firebase
+      for (const docData of inMemoryDB.filter(d => d.isModified)) {
+        const { id, isNew, isModified, ...cleanData } = docData;
+        if (isNew) {
+          await addDoc(collection(db, "clients"), { ...cleanData, created_at: serverTimestamp() });
+          created++;
+        } else {
+          await updateDoc(doc(db, "clients", id), { ...cleanData, updated_at: serverTimestamp() });
+          updated++;
+        }
+      }
+
+      setResult({ created, updated, failed, total: rawRows.length });
       setStatus("done");
-      
-      setTimeout(() => {
-        onImportDone();
-      }, 2500);
+      setTimeout(() => onImportDone(), 2500);
 
     } catch (err) {
       console.error("Import Error:", err);
@@ -226,10 +253,7 @@ export default function ClientImport({ onImportDone, onClose }) {
         <Download className="w-4 h-4 text-brand-green mt-0.5 flex-shrink-0" />
         <div className="flex-1">
           <p className="text-sm font-medium text-[#c8d4d0]">Step 1: Download the template</p>
-          <p className="text-xs text-[#889995] mt-0.5">
-            Includes new fields: <span className="font-mono text-[10px] text-brand-green">xSIP Registration Number, Holding Nature</span>
-          </p>
-          <p className="text-[10px] text-[#889995] mt-1">If xSIP Number is identical, it updates the existing investment. If missing, a new sub-investment is created.</p>
+          <p className="text-xs text-[#889995] mt-0.5">The system uses the <span className="font-bold text-white">xSIP Registration Number</span> to track individual investments. If you upload data with an existing xSIP number, it will securely update the existing record instead of creating a duplicate.</p>
         </div>
         <button onClick={downloadTemplate} className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-brand-green text-brand-green hover:bg-brand-green hover:text-white transition-all flex-shrink-0">
           Download Template
@@ -257,20 +281,14 @@ export default function ClientImport({ onImportDone, onClose }) {
           <CheckCircle2 className="w-5 h-5 text-[#4ade80] flex-shrink-0 mt-0.5" />
           <div className="text-sm text-[#c8d4d0]">
             <p className="font-semibold text-white">Import complete!</p>
-            <p className="mt-1 text-xs text-[#889995]">
-              {result.created} clients created · {result.updated} updated
-            </p>
+            <p className="mt-1 text-xs text-[#889995]">{result.created} clients created · {result.updated} updated</p>
           </div>
         </div>
       )}
 
       {status !== "done" && (
         <div className="flex justify-end">
-          <button
-            onClick={handleUpload}
-            disabled={!file || status === "loading"}
-            className="px-5 py-2.5 rounded-xl font-bold text-sm bg-[#008254] text-white disabled:opacity-50 flex items-center justify-center transition-opacity"
-          >
+          <button onClick={handleUpload} disabled={!file || status === "loading"} className="px-5 py-2.5 rounded-xl font-bold text-sm bg-[#008254] text-white disabled:opacity-50 flex items-center justify-center transition-opacity">
             {status === "loading" ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Importing...</> : "Import Clients"}
           </button>
         </div>

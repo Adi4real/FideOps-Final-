@@ -12,7 +12,7 @@ const RM_LIST = ["Ujjwal", "Ujjwal and Manny", "Ujjwal and Joel", "Uday and Joel
 
 const RM_PHONES = {
   "Ujjwal": "917010154937",
-  "Manny": "91XXXXXXXXXX",
+  "Manny": "919962916244",
   "Uday": "91XXXXXXXXXX",
   "Joel": "91XXXXXXXXXX",
   "Prince": "919201091417",
@@ -123,21 +123,33 @@ export default function NewTask() {
     fetchClients();
   }, []);
 
+  // --- UPDATED FILTERING LOGIC ---
   useEffect(() => {
     if (clientQuery.length >= 2) {
       const q = clientQuery.toLowerCase();
-      const filtered = clients.filter(c =>
-        c.client_name?.toLowerCase().includes(q) || c.client_code?.toLowerCase().includes(q)
-      ).slice(0, 8);
+      const filtered = clients.filter(c => {
+        // Create a combined string of Name + Tax Status to allow searching by either
+        const displayName = `${c.client_name} ${c.tax_status && c.tax_status !== "-" ? `(${c.tax_status})` : ""}`.toLowerCase();
+        return displayName.includes(q) || c.client_code?.toLowerCase().includes(q);
+      }).slice(0, 8);
+      
       setClientSuggestions(filtered);
-      if (form.client_name !== clientQuery) setShowSuggestions(true);
+
+      // Hide suggestions if the exact combined name matches what is typed
+      const exactMatch = clients.find(c => `${c.client_name} ${c.tax_status && c.tax_status !== "-" ? `(${c.tax_status})` : ""}` === clientQuery);
+      if (!exactMatch) setShowSuggestions(true);
     } else {
       setShowSuggestions(false);
     }
-  }, [clientQuery, clients, form.client_name]);
+  }, [clientQuery, clients]);
 
+  // --- UPDATED SELECT LOGIC ---
   const selectClient = (c) => {
-    setClientQuery(c.client_name);
+    // Show the name + tax status in the input box so the user knows which one they picked
+    const displayName = `${c.client_name} ${c.tax_status && c.tax_status !== "-" ? `(${c.tax_status})` : ""}`;
+    setClientQuery(displayName);
+    
+    // Keep the clean client_name for the actual database submission
     setForm(f => ({ ...f, client_name: c.client_name, client_code: c.client_code, rm_assigned: c.rm_assigned || "", branch: c.branch || "" }));
     setShowSuggestions(false);
   };
@@ -217,7 +229,8 @@ export default function NewTask() {
                     <div style={{ position: "absolute", zIndex: 50, top: "100%", left: 0, right: 0, background: "#0e1e18", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, marginTop: 4 }}>
                       {clientSuggestions.map(c => (
                         <button key={c.id} type="button" onMouseDown={(e) => { e.preventDefault(); selectClient(c); }} style={{ width: "100%", textAlign: "left", padding: "10px 16px", background: "transparent", color: "white", cursor: "pointer", border: "none", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                          {c.client_name}
+                          {/* --- UPDATED LIST UI --- */}
+                          {c.client_name} {c.tax_status && c.tax_status !== "-" ? <span style={{fontSize: "10px", color: "#4ade80", marginLeft: "6px", fontWeight: "bold"}}>({c.tax_status})</span> : ""}
                         </button>
                       ))}
                     </div>

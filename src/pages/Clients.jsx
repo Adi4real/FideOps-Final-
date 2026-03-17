@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp } from "lucide-react";
+import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check } from "lucide-react";
 
 import { db } from "../firebase"; 
 import { collection, query, onSnapshot, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
@@ -18,23 +18,36 @@ export default function Clients() {
   const [showImport, setShowImport] = useState(false);
   const [loading, setLoading] = useState(true);
   
-  // State for toggling multiple investments open/closed
   const [expandedInv, setExpandedInv] = useState(null);
+  const [expandedGroup, setExpandedGroup] = useState(null);
 
+  // Filter States
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState({ rm: "", tax: "", holding: "" });
+
+  // Bulk Delete States
+  const [isBulkMode, setIsBulkMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+
+  // ==========================================
+  // THE FIX: OPTIMIZED FIREBASE LISTENER
+  // ==========================================
   useEffect(() => {
     const clientsRef = collection(db, "clients");
     const tasksRef = collection(db, "tasks");
 
+    // This now only runs ONCE when the component mounts
     const unsubClients = onSnapshot(query(clientsRef, orderBy("client_name")), (snap) => {
       const clientData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setClients(clientData);
       setLoading(false);
       
-      // Keep selected client updated if data changes in the background
-      if (selected) {
-        const updatedSelected = clientData.find(c => c.id === selected.id);
-        if (updatedSelected) setSelected(updatedSelected);
-      }
+      // Safely update the selected client without triggering the useEffect again
+      setSelected(prev => {
+        if (!prev) return null;
+        const updatedSelected = clientData.find(c => c.id === prev.id);
+        return updatedSelected || prev;
+      });
     });
 
     const unsubTasks = onSnapshot(query(tasksRef, orderBy("entry_date", "desc")), (snap) => {
@@ -42,17 +55,72 @@ export default function Clients() {
     });
 
     return () => { unsubClients(); unsubTasks(); };
-  }, [selected]);
+  }, []); // <--- EMPTY ARRAY! Stops the massive read spikes!
 
-  const filtered = search.length >= 1
-    ? clients.filter(c =>
-        c.client_name?.toLowerCase().includes(search.toLowerCase()) ||
-        c.client_code?.toLowerCase().includes(search.toLowerCase()) ||
-        c.rm_assigned?.toLowerCase().includes(search.toLowerCase())
-      )
-    : clients;
+  // Extract Dynamic Filter Options
+  const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
+  const uniqueHoldings = [...new Set(clients.map(c => c.holding_nature).filter(v => v && v !== "-"))].sort();
+  const uniqueTaxes = [...new Set(clients.flatMap(c => (c.tax_status || "").split(", ")).filter(v => v && v !== "-"))].sort();
 
+  // Advanced Filtering Logic
+  const filtered = clients.filter(c => {
+    const matchesSearch = search.length < 1 || 
+      c.client_name?.toLowerCase().includes(search.toLowerCase()) ||
+      c.client_code?.toLowerCase().includes(search.toLowerCase()) ||
+      c.rm_assigned?.toLowerCase().includes(search.toLowerCase());
+
+    const matchesRM = filters.rm === "" || c.rm_assigned === filters.rm;
+    const matchesHolding = filters.holding === "" || c.holding_nature === filters.holding;
+    const matchesTax = filters.tax === "" || (c.tax_status && c.tax_status.includes(filters.tax));
+
+    return matchesSearch && matchesRM && matchesHolding && matchesTax;
+  });
+
+  // Grouping Logic for Sidebar by CLIENT NAME
+  const groupedClients = Object.values(filtered.reduce((acc, c) => {
+    const key = c.client_name?.trim().toLowerCase() || "unknown";
+    if (!acc[key]) acc[key] = { client_name: c.client_name || "Unknown", profiles: [] };
+    acc[key].profiles.push(c);
+    return acc;
+  }, {})).sort((a, b) => a.client_name.localeCompare(b.client_name));
+
+  const activeFilterCount = Object.values(filters).filter(v => v !== "").length;
   const clientTasks = selected ? tasks.filter(t => t.client_code === selected.client_code) : [];
+
+  // Bulk Actions Logic
+  const toggleBulkMode = () => {
+    setIsBulkMode(!isBulkMode);
+    setSelectedIds(new Set());
+  };
+
+  const toggleSelection = (id) => {
+    const newSet = new Set(selectedIds);
+    if (newSet.has(id)) newSet.delete(id);
+    else newSet.add(id);
+    setSelectedIds(newSet);
+  };
+
+  const isAllSelected = filtered.length > 0 && selectedIds.size === filtered.length;
+  const toggleSelectAll = () => {
+    if (isAllSelected) setSelectedIds(new Set()); 
+    else setSelectedIds(new Set(filtered.map(c => c.id))); 
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!window.confirm(`Are you sure you want to permanently delete ${selectedIds.size} selected clients?`)) return;
+
+    try {
+      for (const id of selectedIds) {
+        await deleteDoc(doc(db, "clients", id));
+      }
+      setSelectedIds(new Set());
+      setIsBulkMode(false);
+      if (selected && selectedIds.has(selected.id)) setSelected(null);
+    } catch (error) {
+      console.error("Error deleting clients:", error);
+    }
+  };
 
   const handleDelete = async (client) => {
     if (!window.confirm(`Delete "${client.client_name}" permanently?`)) return;
@@ -61,6 +129,29 @@ export default function Clients() {
       if (selected?.id === client.id) setSelected(null);
     } catch (error) {
       console.error("Error deleting client:", error);
+    }
+  };
+
+  const handleSave = async (data) => {
+    try {
+      if (data.id) {
+        await updateDoc(doc(db, "clients", data.id), data);
+      } else {
+        const tax = data.tax_status || "-";
+        const exists = clients.some(c => c.client_code === data.client_code && (c.tax_status || "-") === tax);
+        if (exists) { 
+          alert("A client profile with this Code and Tax Status already exists!"); 
+          return; 
+        }
+        await addDoc(collection(db, "clients"), { 
+          ...data, 
+          created_at: serverTimestamp() 
+        });
+      }
+      setShowForm(false);
+      setEditClient(null);
+    } catch (error) {
+      console.error("Error saving client:", error);
     }
   };
 
@@ -78,16 +169,60 @@ export default function Clients() {
   const openEdit = (client) => { setEditClient(client); setShowForm(true); };
   const closeForm = () => { setShowForm(false); setEditClient(null); };
 
-  // Investment UI helper variables
-  const investments = selected?.investments || [];
-  const hasInvestments = investments.length > 0;
+  const groupedInvestments = (selected?.investments || []).reduce((acc, inv) => {
+    const folio = inv.folio_number && inv.folio_number !== "-" ? inv.folio_number : "Unassigned Folios";
+    if (!acc[folio]) acc[folio] = [];
+    acc[folio].push(inv);
+    return acc;
+  }, {});
+
+  const renderProfileButton = (c, isSubItem) => {
+    const isSelectedForDeletion = selectedIds.has(c.id);
+    const isActive = !isBulkMode && selected?.id === c.id;
+
+    return (
+      <button
+        key={c.id}
+        onClick={() => { 
+          if (isBulkMode) toggleSelection(c.id);
+          else { setSelected(c); setExpandedInv(null); }
+        }}
+        className={`w-full text-left py-3 flex items-center gap-3 transition-colors ${isSelectedForDeletion ? 'bg-red-500/10' : ''} ${isSubItem ? 'pl-10 pr-4 border-l-2 border-brand-green/40 hover:bg-white/5' : 'px-4 hover:bg-white/5 border-b border-[var(--border)]'}`}
+        style={{ background: isActive ? "rgba(0, 130, 84, 0.12)" : isSelectedForDeletion ? "rgba(248, 113, 113, 0.1)" : "transparent" }}
+      >
+        {isBulkMode && (
+          <div className={`w-5 h-5 rounded border flex flex-shrink-0 items-center justify-center transition-all ${isSelectedForDeletion ? 'bg-red-500 border-red-500' : 'border-white/20 bg-black/20'}`}>
+            {isSelectedForDeletion && <Check className="w-3 h-3 text-white" />}
+          </div>
+        )}
+
+        {!isBulkMode && !isSubItem && (
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-sm"
+            style={{ background: isActive ? "var(--brand-green)" : "rgba(255,255,255,0.07)", color: isActive ? "white" : "var(--brand-green)" }}>
+            {c.client_name?.[0]?.toUpperCase() || "?"}
+          </div>
+        )}
+
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold truncate" style={{ color: isSelectedForDeletion ? "#f87171" : "var(--text-main)" }}>
+            {isSubItem ? (c.tax_status && c.tax_status !== "-" ? c.tax_status : "Standard Profile") : c.client_name}
+            {!isBulkMode && !isSubItem && c.tax_status && c.tax_status !== "-" ? <span className="text-[10px] text-brand-green ml-2">({c.tax_status})</span> : ""}
+          </p>
+          <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
+            {c.client_code} · {c.branch} {!isBulkMode && c.investments?.length ? `(${c.investments.length} inv)` : ""}
+          </p>
+        </div>
+        {!isBulkMode && <ChevronRight className="w-4 h-4 flex-shrink-0" style={{ color: "var(--text-muted)" }} />}
+      </button>
+    );
+  };
 
   return (
     <div className="p-4 lg:p-8 space-y-6" style={{ background: "var(--bg-black)", minHeight: "100vh", color: "var(--text-main)" }}>
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: "var(--text-main)" }}>Client Master</h1>
-          <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>{clients.length} unique client profiles</p>
+          <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>{clients.length} profiles / {groupedClients.length} unique names</p>
         </div>
         <div className="flex gap-2">
           <button onClick={() => {}} className="p-2 rounded-xl transition-colors" style={{ background: "var(--glass)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
@@ -103,55 +238,161 @@ export default function Clients() {
       </div>
 
       {showImport && <ClientImport onImportDone={() => setShowImport(false)} onClose={() => setShowImport(false)} />}
-      {showForm && <ClientForm client={editClient} onSave={() => {}} onClose={closeForm} />}
+      {showForm && <ClientForm client={editClient} onSave={handleSave} onClose={closeForm} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-1 rounded-2xl overflow-hidden flex flex-col" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)" }}>
-          <div className="p-4" style={{ borderBottom: "1px solid var(--border)" }}>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: "var(--text-muted)" }} />
-              <input
-                className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm"
-                style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text-main)" }}
-                placeholder="Search name or code..."
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-              />
+        
+        {/* Left: Client List */}
+        <div className="lg:col-span-1 rounded-2xl overflow-visible flex flex-col relative" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)" }}>
+          <div className="p-4 relative z-20" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div className="flex gap-2 relative">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: "var(--text-muted)" }} />
+                <input
+                  className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm"
+                  style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text-main)" }}
+                  placeholder="Search name or code..."
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                />
+              </div>
+              
+              <button 
+                onClick={() => setShowFilters(!showFilters)}
+                className="relative px-3 rounded-xl border flex items-center justify-center transition-all hover:bg-white/5"
+                style={{ 
+                  background: activeFilterCount > 0 ? "rgba(0,130,84,0.15)" : "var(--input-bg)", 
+                  borderColor: activeFilterCount > 0 ? "var(--brand-green)" : "var(--border)",
+                  color: activeFilterCount > 0 ? "var(--brand-green)" : "var(--text-muted)"
+                }}
+              >
+                <Filter className="w-4 h-4" />
+                {activeFilterCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-brand-green text-white flex items-center justify-center text-[9px] font-bold shadow-sm">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </button>
+
+              <button 
+                onClick={toggleBulkMode}
+                className="relative px-3 rounded-xl border flex items-center justify-center transition-all hover:bg-white/5"
+                style={{ 
+                  background: isBulkMode ? "rgba(248,113,113,0.15)" : "var(--input-bg)", 
+                  borderColor: isBulkMode ? "#f87171" : "var(--border)",
+                  color: isBulkMode ? "#f87171" : "var(--text-muted)"
+                }}
+                title="Select multiple clients to delete"
+              >
+                <CheckSquare className="w-4 h-4" />
+              </button>
+
+              {showFilters && (
+                <div className="absolute top-[115%] right-0 w-64 p-4 rounded-2xl shadow-2xl border animate-in slide-in-from-top-2" style={{ background: "#0a1612", borderColor: "var(--border)", zIndex: 100 }}>
+                  <div className="flex items-center justify-between mb-3 border-b border-white/10 pb-2">
+                    <p className="text-xs font-bold uppercase tracking-wider text-white">Filters</p>
+                    {activeFilterCount > 0 && (
+                      <button onClick={() => setFilters({rm: "", tax: "", holding: ""})} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold">
+                        <XCircle className="w-3 h-3" /> Clear
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">RM Assigned</label>
+                      <select value={filters.rm} onChange={e => setFilters({...filters, rm: e.target.value})} className="w-full bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none">
+                        <option value="">All RMs</option>
+                        {uniqueRMs.map(rm => <option key={rm} value={rm}>{rm}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">Tax Status</label>
+                      <select value={filters.tax} onChange={e => setFilters({...filters, tax: e.target.value})} className="w-full bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none">
+                        <option value="">All Statuses</option>
+                        {uniqueTaxes.map(tax => <option key={tax} value={tax}>{tax}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">Holding Nature</label>
+                      <select value={filters.holding} onChange={e => setFilters({...filters, holding: e.target.value})} className="w-full bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none">
+                        <option value="">All Holdings</option>
+                        {uniqueHoldings.map(hn => <option key={hn} value={hn}>{hn}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
+
+            {isBulkMode && (
+              <div className="mt-3 p-2.5 rounded-xl border border-red-500/30 bg-red-500/10 flex items-center justify-between animate-in fade-in zoom-in-95">
+                <div className="flex items-center gap-2 pl-1">
+                   <button onClick={toggleSelectAll} className="flex items-center gap-1.5 text-xs font-bold text-red-400 hover:text-red-300">
+                     <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${isAllSelected ? 'bg-red-500 border-red-500' : 'border-red-400/50 bg-black/20'}`}>
+                        {isAllSelected && <Check className="w-3 h-3 text-white" />}
+                     </div>
+                     {isAllSelected ? "Deselect All" : "Select All"}
+                   </button>
+                   <span className="text-xs font-bold text-red-400 ml-2 border-l border-red-500/30 pl-3">{selectedIds.size} Selected</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={toggleBulkMode} className="text-xs font-semibold text-white/50 hover:text-white px-2 py-1 transition-colors">Cancel</button>
+                  <button 
+                    onClick={handleBulkDelete} 
+                    disabled={selectedIds.size === 0} 
+                    className="flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50 transition-all"
+                  >
+                    <Trash2 className="w-3 h-3" /> Delete
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-          <div className="overflow-y-auto flex-1" style={{ maxHeight: "600px" }}>
+          
+          <div className="overflow-y-auto flex-1 z-10" style={{ maxHeight: "600px" }}>
             {loading ? (
               <div className="p-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>Loading...</div>
             ) : filtered.length === 0 ? (
-              <div className="p-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>No clients found</div>
+              <div className="p-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>No clients match the criteria</div>
             ) : (
-              filtered.map(c => (
-                <button
-                  key={c.id}
-                  onClick={() => { setSelected(c); setExpandedInv(null); }}
-                  className="w-full text-left px-4 py-3 flex items-center gap-3 transition-colors"
-                  style={{
-                    borderBottom: "1px solid var(--border)",
-                    background: selected?.id === c.id ? "rgba(0, 130, 84, 0.12)" : "transparent",
-                  }}
-                >
-                  <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-sm"
-                    style={{ background: selected?.id === c.id ? "var(--brand-green)" : "rgba(255,255,255,0.07)", color: selected?.id === c.id ? "white" : "var(--brand-green)" }}>
-                    {c.client_name?.[0]?.toUpperCase() || "?"}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold truncate" style={{ color: "var(--text-main)" }}>{c.client_name}</p>
-                    <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
-                      {c.client_code} · {c.branch} {c.investments?.length ? `(${c.investments.length} inv)` : ""}
-                    </p>
-                  </div>
-                  <ChevronRight className="w-4 h-4 flex-shrink-0" style={{ color: "var(--text-muted)" }} />
-                </button>
-              ))
+              groupedClients.map(group => {
+                const isMultiple = group.profiles.length > 1;
+                const groupKey = group.client_name?.toLowerCase() || "unknown";
+                const isExpanded = expandedGroup === groupKey;
+                
+                if (isMultiple) {
+                  return (
+                    <div key={groupKey} className="border-b border-[var(--border)]">
+                      <button 
+                        onClick={() => setExpandedGroup(isExpanded ? null : groupKey)} 
+                        className="w-full text-left px-4 py-3 flex items-center gap-3 transition-colors hover:bg-white/5"
+                      >
+                        <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-sm bg-white/5 text-white/50">
+                          {group.client_name?.[0]?.toUpperCase() || "?"}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-white truncate">{group.client_name}</p>
+                          <p className="text-[10px] text-brand-green mt-0.5 font-bold uppercase tracking-wider">{group.profiles.length} Tax Profiles</p>
+                        </div>
+                        {isExpanded ? <ChevronUp className="w-4 h-4 text-white/40" /> : <ChevronDown className="w-4 h-4 text-white/40" />}
+                      </button>
+                      
+                      {isExpanded && (
+                        <div className="bg-black/40 pb-2 shadow-inner">
+                          {group.profiles.map(c => renderProfileButton(c, true))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                } else {
+                  return renderProfileButton(group.profiles[0], false);
+                }
+              })
             )}
           </div>
         </div>
 
+        {/* Right: Client Detail */}
         <div className="lg:col-span-2 space-y-4">
           {!selected ? (
             <div className="rounded-2xl flex items-center justify-center min-h-[400px]" style={{ background: "var(--glass)", border: "1px solid var(--border)" }}>
@@ -171,7 +412,9 @@ export default function Clients() {
                       {selected.client_name?.[0]?.toUpperCase()}
                     </div>
                     <div>
-                      <h2 className="text-xl font-bold" style={{ color: "var(--text-main)" }}>{selected.client_name}</h2>
+                      <h2 className="text-xl font-bold" style={{ color: "var(--text-main)" }}>
+                        {selected.client_name} <span className="text-sm text-brand-green font-mono ml-2">{selected.tax_status && selected.tax_status !== "-" ? `(${selected.tax_status})` : ""}</span>
+                      </h2>
                       <p className="text-sm" style={{ color: "var(--text-muted)" }}>{selected.client_code}</p>
                     </div>
                   </div>
@@ -186,98 +429,98 @@ export default function Clients() {
                     </button>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-2 gap-4 text-sm">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm border-t border-white/5 pt-4">
                   {[
+                    ["Holding Nature", selected.holding_nature], 
                     ["RM Assigned", selected.rm_assigned], 
                     ["Branch", selected.branch]
                   ].map(([k, v]) => (
                     <div key={k}>
                       <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>{k}</p>
-                      <p className="font-medium" style={{ color: "var(--text-main)" }}>{v}</p>
+                      <p className="font-medium" style={{ color: "var(--text-main)" }}>{v && v !== "-" ? v : "—"}</p>
                     </div>
                   ))}
                 </div>
                 {selected.notes && selected.notes !== "-" && (
                   <div className="mt-4 p-3 rounded-xl text-sm" style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
-                    {selected.notes}
+                    <span className="font-bold uppercase text-[10px] mr-2">Notes:</span> {selected.notes}
                   </div>
                 )}
               </div>
 
-              {/* Investments Section - Accordion Style */}
+              {/* Investments Section - Grouped by Folio */}
               <div className="rounded-2xl p-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)" }}>
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center justify-between mb-6">
                   <div className="flex items-center gap-2">
                     <Wallet className="w-5 h-5 text-brand-green" />
-                    <h3 className="font-semibold" style={{ color: "var(--text-main)" }}>Investment Details</h3>
+                    <h3 className="font-semibold" style={{ color: "var(--text-main)" }}>Investment Portfolio</h3>
                   </div>
                   <span className="text-xs font-bold px-2 py-1 rounded-md" style={{ background: "rgba(0,130,84,0.2)", color: "var(--brand-green)" }}>
-                    {investments.length} Active
+                    {selected.investments?.length || 0} SIPs / Lumpsums
                   </span>
                 </div>
                 
-                {!hasInvestments ? (
+                {Object.keys(groupedInvestments).length === 0 ? (
                   <div className="text-center py-6 border border-dashed border-white/10 rounded-xl">
                     <p className="text-sm" style={{ color: "var(--text-muted)" }}>No investment records found.</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    {investments.map((inv, idx) => {
-                      const isExpanded = expandedInv === inv.xsip_reg_no;
-                      
-                      return (
-                        <div key={idx} className="rounded-xl overflow-hidden transition-all" style={{ border: isExpanded ? "1px solid var(--brand-green)" : "1px solid var(--border)", background: "rgba(255,255,255,0.02)" }}>
-                          
-                          {/* Accordion Header */}
-                          <div 
-                            className="p-4 flex items-center justify-between cursor-pointer hover:bg-white/5"
-                            onClick={() => setExpandedInv(isExpanded ? null : inv.xsip_reg_no)}
-                          >
-                            <div>
-                              <p className="text-sm font-bold text-brand-green">{inv.scheme_name}</p>
-                              <p className="text-xs font-mono mt-1" style={{ color: "var(--text-muted)" }}>xSIP: {inv.xsip_reg_no}</p>
-                            </div>
-                            <div className="flex items-center gap-4">
-                              <div className="text-right hidden sm:block">
-                                <p className="text-sm font-bold text-white">
-                                  {inv.installment_amount !== "-" && !isNaN(inv.installment_amount) ? `₹${Number(inv.installment_amount).toLocaleString('en-IN')}` : inv.installment_amount}
-                                </p>
-                                <p className="text-[10px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>{inv.frequency_type}</p>
-                              </div>
-                              {isExpanded ? <ChevronUp className="w-5 h-5 text-white/50" /> : <ChevronDown className="w-5 h-5 text-white/50" />}
-                            </div>
-                          </div>
-
-                          {/* Accordion Expanded Details */}
-                          {isExpanded && (
-                            <div className="p-4 border-t border-white/5 bg-black/20 grid grid-cols-2 md:grid-cols-4 gap-4 animate-in slide-in-from-top-2">
-                              <div>
-                                <p className="text-[9px] uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Folio Number</p>
-                                <p className="text-xs font-mono text-white">{inv.folio_number}</p>
-                              </div>
-                              <div>
-                                <p className="text-[9px] uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Holding Nature</p>
-                                <p className="text-xs text-white">{inv.holding_nature}</p>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <Calendar className="w-3 h-3 text-brand-green" />
-                                <div>
-                                  <p className="text-[9px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Start Date</p>
-                                  <p className="text-xs text-white">{inv.start_date}</p>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <Calendar className="w-3 h-3 text-[#f87171]" />
-                                <div>
-                                  <p className="text-[9px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>End Date</p>
-                                  <p className="text-xs text-white">{inv.end_date}</p>
-                                </div>
-                              </div>
-                            </div>
-                          )}
+                  <div className="space-y-6">
+                    {Object.entries(groupedInvestments).map(([folio, invs]) => (
+                      <div key={folio} className="p-4 rounded-xl" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--border)" }}>
+                        <div className="mb-4">
+                          <p className="text-[10px] uppercase font-bold text-[#889995] mb-1">Folio Number</p>
+                          <p className="text-sm font-mono text-white tracking-wider">{folio}</p>
                         </div>
-                      )
-                    })}
+                        
+                        <div className="space-y-3">
+                          {invs.map((inv, idx) => {
+                            const isExpanded = expandedInv === inv.xsip_reg_no;
+                            return (
+                              <div key={idx} className="rounded-lg overflow-hidden transition-all" style={{ border: isExpanded ? "1px solid var(--brand-green)" : "1px solid rgba(255,255,255,0.05)", background: "rgba(0,0,0,0.2)" }}>
+                                <div 
+                                  className="p-3 flex items-center justify-between cursor-pointer hover:bg-white/5"
+                                  onClick={() => setExpandedInv(isExpanded ? null : inv.xsip_reg_no)}
+                                >
+                                  <div>
+                                    <p className="text-sm font-bold text-brand-green">{inv.scheme_name}</p>
+                                    <p className="text-[10px] font-mono mt-1 text-[#889995]">xSIP: {inv.xsip_reg_no}</p>
+                                  </div>
+                                  <div className="flex items-center gap-4">
+                                    <div className="text-right">
+                                      <p className="text-sm font-bold text-white">
+                                        {inv.installment_amount !== "-" && !isNaN(inv.installment_amount) ? `₹${Number(inv.installment_amount).toLocaleString('en-IN')}` : inv.installment_amount}
+                                      </p>
+                                      <p className="text-[9px] uppercase tracking-wider text-[#889995] mt-0.5">{inv.frequency_type}</p>
+                                    </div>
+                                    {isExpanded ? <ChevronUp className="w-4 h-4 text-white/50" /> : <ChevronDown className="w-4 h-4 text-white/50" />}
+                                  </div>
+                                </div>
+
+                                {isExpanded && (
+                                  <div className="p-3 border-t border-white/5 bg-black/40 grid grid-cols-2 gap-4 animate-in slide-in-from-top-2">
+                                    <div className="flex items-center gap-2">
+                                      <Calendar className="w-3 h-3 text-brand-green" />
+                                      <div>
+                                        <p className="text-[8px] uppercase tracking-wider text-[#889995]">Start Date</p>
+                                        <p className="text-[10px] text-white">{inv.start_date}</p>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <Calendar className="w-3 h-3 text-[#f87171]" />
+                                      <div>
+                                        <p className="text-[8px] uppercase tracking-wider text-[#889995]">End Date</p>
+                                        <p className="text-[10px] text-white">{inv.end_date}</p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
