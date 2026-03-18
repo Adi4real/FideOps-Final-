@@ -24,6 +24,20 @@ const TAX_STATUSES = [
   "BANK/CO-OPERATIVE BANK", "ARTIFICIAL JURIDICAL PERSON", "LOCAL AUTHORITY"
 ];
 
+const RM_LIST = [
+  "Ujjwal", "Ujjwal and Manny", "Ujjwal and Joel", "Uday and Joel", 
+  "Uday", "Joel", "Manny", "Prince"
+];
+
+// --- HELPER: Auto-map RM to Branch ---
+function getBranch(rm) {
+  if (!rm) return "";
+  if (rm === "Ujjwal and Joel") return "Katni";
+  if (rm.includes("Ujjwal") || rm.includes("Manny")) return "Chennai";
+  if (rm.includes("Uday") || rm.includes("Joel") || rm.includes("Prince")) return "Katni";
+  return rm;
+}
+
 export default function ClientForm({ client, onSave, onClose }) {
   const [form, setForm] = useState(client || {
     client_code: "", client_name: "", holding_nature: "", tax_status: "", 
@@ -69,7 +83,6 @@ export default function ClientForm({ client, onSave, onClose }) {
           <Input value={form.client_name || ""} onChange={e => set("client_name", e.target.value)} required className="bg-black border-white/10 text-white" />
         </div>
 
-        {/* Updated Holding Nature Dropdown */}
         <div>
           <Label className="text-xs text-white/50 mb-1 block uppercase tracking-wider">Holding Nature</Label>
           <select 
@@ -82,7 +95,6 @@ export default function ClientForm({ client, onSave, onClose }) {
           </select>
         </div>
 
-        {/* Updated Tax Status Dropdown */}
         <div>
           <Label className="text-xs text-white/50 mb-1 block uppercase tracking-wider">Tax Status</Label>
           <select 
@@ -95,14 +107,31 @@ export default function ClientForm({ client, onSave, onClose }) {
           </select>
         </div>
 
+        {/* Updated RM Assigned Dropdown with Auto-Mapping */}
         <div>
           <Label className="text-xs text-white/50 mb-1 block uppercase tracking-wider">RM Assigned</Label>
-          <Input value={form.rm_assigned || ""} onChange={e => set("rm_assigned", e.target.value)} className="bg-black border-white/10 text-white" />
+          <select 
+            value={form.rm_assigned || ""} 
+            onChange={e => {
+              const selectedRM = e.target.value;
+              setForm(f => ({ 
+                ...f, 
+                rm_assigned: selectedRM,
+                branch: getBranch(selectedRM) // <-- Auto updates the branch!
+              }));
+            }} 
+            className="flex h-10 w-full rounded-md border border-white/10 bg-black px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-[#008254]"
+          >
+            <option value="">Select RM...</option>
+            {RM_LIST.map(rm => <option key={rm} value={rm}>{rm}</option>)}
+          </select>
         </div>
+        
         <div>
           <Label className="text-xs text-white/50 mb-1 block uppercase tracking-wider">Branch</Label>
           <Input value={form.branch || ""} onChange={e => set("branch", e.target.value)} className="bg-black border-white/10 text-white" />
         </div>
+        
         <div className="sm:col-span-2">
           <Label className="text-xs text-white/50 mb-1 block uppercase tracking-wider">Notes</Label>
           <Textarea rows={2} value={form.notes || ""} onChange={e => set("notes", e.target.value)} className="bg-black border-white/10 text-white" />

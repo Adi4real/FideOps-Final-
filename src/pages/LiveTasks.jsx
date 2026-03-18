@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
 import { format, isToday, isPast, parseISO, differenceInDays } from "date-fns";
-import { AlertTriangle, Clock, CalendarCheck, Search, RefreshCw, Pencil, Check, X, CalendarPlus, Download } from "lucide-react";
+import { AlertTriangle, Clock, CalendarCheck, Search, RefreshCw, Pencil, Check, X, CalendarPlus, Download, Plus } from "lucide-react";
 
 // Firebase Imports
 import { db } from "../firebase"; 
-import { collection, query, onSnapshot, orderBy, doc, updateDoc, deleteDoc, getDocs } from "firebase/firestore";
+import { collection, query, onSnapshot, orderBy, doc, updateDoc, deleteDoc, getDocs, where } from "firebase/firestore";
 
-// --- Branch Mapping Logic (Ported from Lead Import) ---
+// --- Branch Mapping Logic ---
 function getBranch(rm) {
   if (!rm) return "";
   if (rm === "Ujjwal and Joel") return "Katni Branch";
@@ -15,8 +15,38 @@ function getBranch(rm) {
   return rm;
 }
 
+// --- Helper: Convert Number to Indian Words ---
+function numberToWords(num) {
+  if (num === 0 || !num || isNaN(num)) return "";
+  const a = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+  const convert = (n) => {
+    if (n < 20) return a[n];
+    if (n < 100) return b[Math.floor(n / 10)] + (n % 10 !== 0 ? " " + a[n % 10] : "");
+    if (n < 1000) return a[Math.floor(n / 100)] + " Hundred" + (n % 100 !== 0 ? " and " + convert(n % 100) : "");
+    if (n < 100000) return convert(Math.floor(n / 1000)) + " Thousand" + (n % 1000 !== 0 ? " " + convert(n % 1000) : "");
+    if (n < 10000000) return convert(Math.floor(n / 100000)) + " Lakh" + (n % 100000 !== 0 ? " " + convert(n % 100000) : "");
+    return convert(Math.floor(n / 10000000)) + " Crore" + (n % 10000000 !== 0 ? " " + convert(n % 10000000) : "");
+  };
+
+  return convert(parseInt(num)) + " Rupees Only";
+}
+
+
 // Configuration Constants
-const ACTION_OPTIONS = ["Account Opening", "Demat Transfer", "SIP Registration", "KYC Update", "Redemption", "Advisory", "General Follow-up"];
+const ACTION_OPTIONS = [
+  "Account Opening", "Demat Transfer", "KYC Update", "Advisory", "General Follow-up",
+  "SIP Registration", "SIP Cancellation", "Redemption", "Lumpsum Purchase", 
+  "Lumpsum & SIP", "Switch", "NFO Purchase", "Account Statement", 
+  "Capital Gains Statement", "Nomination Update", "Bank Mandate", "Other",
+  "KYC Verification", "KYC Modification", "Physical KYC", "eKYC", "SIP Switch", 
+  "SIP Stop", "SIP Top-up", "SIP Restart", "SIP Pause", "Scheme Switch", 
+  "Scheme Redemption", "Scheme Re-investment", "New Policy Purchase", 
+  "Policy Renewal", "Policy Servicing", "Policy Surrender", "Policy Claim Assistance", 
+  "Policy Revival", "Policy Nominee Update", "Policy Detail Update / Correction"
+];
+
 const STAFF_MEMBERS = ["Ujjwal", "Manny", "Uday", "Joel", "Prince", "Ujjwal and Manny", "Ujjwal and Joel", "Uday and Joel"];
 const CHANNEL_OPTIONS = ["Email", "WhatsApp", "Call", "In-Person", "Branch Visit"];
 const ALL_STATUSES = ["Pending", "Under Process", "Waiting Client", "Completed", "Cancelled"];
@@ -84,19 +114,45 @@ function exportToExcel(allTasks, selectedYear) {
   URL.revokeObjectURL(url);
 }
 
+// --- Helper: Parse the structured text string back into Objects for Editing ---
+function parseTransactionItems(rawString) {
+  if (!rawString) return [{ productName: "", amount: "", type: "SIP" }];
+  
+  const lines = rawString.split("\n");
+  const parsed = lines.map(line => {
+    const match = line.match(/^(.*?)(?:\s*\(₹([\d.,]+)\))?(?:\s*\[(.*?)\])?$/);
+    if (match) {
+      return { 
+        productName: match[1]?.trim() || "", 
+        amount: match[2]?.replace(/,/g, '')?.trim() || "",
+        type: match[3]?.trim() || "SIP"
+      };
+    }
+    return { productName: line.trim(), amount: "", type: "SIP" };
+  }).filter(i => i.productName !== "");
+  
+  return parsed.length > 0 ? parsed : [{ productName: "", amount: "", type: "SIP" }];
+}
+
+
 function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ ...task });
   const [saving, setSaving] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [reviewNote, setReviewNote] = useState(task.reviewer_notes || "");
-  const [productInput, setProductInput] = useState("");
-  const [productTags, setProductTags] = useState(task.product_name ? task.product_name.split("\n").filter(t => t.trim() !== "") : []);
+
+  const isTransactionFormat = task.category === "Transaction" || (task.product_name && task.product_name.includes("(₹"));
+  
+  const [transactionItems, setTransactionItems] = useState(parseTransactionItems(task.product_name));
+  const [productTags, setProductTags] = useState(!isTransactionFormat && task.product_name ? task.product_name.split("\n").filter(t => t.trim() !== "") : []);
 
   const st = STATUS_STYLE[task.status] || STATUS_STYLE["Pending"];
   const pr = PRIORITY_STYLE[task.priority] || PRIORITY_STYLE["Medium"];
   const rowBg = ROW_BG[task.status] || "transparent";
 
+  // Normal Tags Logic
+  const [productInput, setProductInput] = useState("");
   const addTag = () => {
     const val = productInput.trim();
     if (val && !productTags.includes(val)) {
@@ -104,29 +160,56 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
       setProductInput("");
     }
   };
-
   const removeTag = (tagToRemove) => setProductTags(productTags.filter(t => t !== tagToRemove));
-
   const handleProductKeyDown = (e) => {
-    if (e.key === "Enter" || e.key === ",") {
-      e.preventDefault();
-      addTag();
-    }
+    if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addTag(); }
   };
+
+  // Transaction Items Logic
+  const addTransactionItem = () => setTransactionItems([...transactionItems, { productName: "", amount: "", type: "SIP" }]);
+  const updateTransactionItem = (index, field, value) => {
+    const newItems = [...transactionItems];
+    newItems[index][field] = value;
+    setTransactionItems(newItems);
+  };
+  const removeTransactionItem = (index) => setTransactionItems(transactionItems.filter((_, i) => i !== index));
+  const totalTransactionAmount = transactionItems.reduce((sum, item) => {
+    const val = parseFloat(item.amount);
+    return sum + (isNaN(val) ? 0 : val);
+  }, 0);
+
 
   const handleSave = async (e) => {
     e.stopPropagation();
     setSaving(true);
-    const finalProductString = productTags.join("\n");
-    const update = { ...editForm, product_name: finalProductString };
+    
+    let finalProductString = "";
+    let finalAmount = null;
+
+    if (isTransactionFormat || editForm.category === "Transaction") {
+      const validItems = transactionItems.filter(i => i.productName.trim() || i.amount);
+      finalProductString = validItems.map(i => {
+        let str = `${i.productName} (₹${i.amount || 0})`;
+        if (editForm.action === "Lumpsum & SIP") str += ` [${i.type || 'SIP'}]`;
+        return str;
+      }).join("\n");
+      finalAmount = totalTransactionAmount > 0 ? totalTransactionAmount : null;
+    } else {
+      finalProductString = productTags.join("\n");
+      finalAmount = editForm.amount ? parseFloat(editForm.amount) : null;
+    }
+
+    const update = { ...editForm, product_name: finalProductString, amount: finalAmount };
+    
     if (editForm.status === "Completed" && task.status !== "Completed") {
       update.closure_date = format(new Date(), "yyyy-MM-dd");
     }
+    
     const taskRef = doc(db, "tasks", task.id);
     await updateDoc(taskRef, update);
     setSaving(false);
     setEditing(false);
-    onStatusChange();
+    onStatusChange(task.id, update.status, update); 
   };
 
   const handleRowClick = (e) => {
@@ -136,10 +219,15 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
   };
 
   const cellStyle = { padding: "11px 12px", verticalAlign: "middle" };
-  const inputStyle = { padding: "4px 8px", borderRadius: 6, background: "#0a1612", border: "1px solid rgba(255,255,255,0.15)", color: "#c8d4d0", fontSize: 12, width: "100%" };
+  const inputStyle = { padding: "6px 10px", borderRadius: 6, background: "#0a1612", border: "1px solid rgba(255,255,255,0.15)", color: "#c8d4d0", fontSize: 12, width: "100%" };
 
   return (
     <>
+      <style>{`
+        input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type="number"] { -moz-appearance: textfield; }
+      `}</style>
+      
       <tr onClick={handleRowClick} style={{ background: rowBg, borderBottom: "1px solid rgba(255,255,255,0.04)", transition: "filter 0.15s", cursor: "pointer" }} onMouseEnter={e => e.currentTarget.style.filter = "brightness(1.25)"} onMouseLeave={e => e.currentTarget.style.filter = "brightness(1)"}>
         <td style={cellStyle}><span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: "#008254" }}>{task.task_id}</span></td>
         <td style={cellStyle}>
@@ -173,7 +261,7 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
         </td>
         <td style={cellStyle}><span style={{ padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 400, background: pr.bg, color: pr.text }}>{task.priority || "—"}</span></td>
         <td style={cellStyle}>
-          <select value={editing ? editForm.status : task.status} onChange={e => { if (editing) setEditForm(f => ({ ...f, status: e.target.value })); else onStatusChange(task.id, e.target.value); }} style={{ padding: "4px 8px", borderRadius: 8, fontSize: 11, fontWeight: 400, background: st.bg, border: `1px solid ${st.border}`, color: st.text, cursor: "pointer" }}>
+          <select value={editing ? editForm.status : task.status} onChange={e => { if (editing) setEditForm(f => ({ ...f, status: e.target.value })); else onStatusChange(task.id, e.target.value, task); }} style={{ padding: "4px 8px", borderRadius: 8, fontSize: 11, fontWeight: 400, background: st.bg, border: `1px solid ${st.border}`, color: st.text, cursor: "pointer" }}>
             {ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </td>
@@ -190,7 +278,7 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
           <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
             {editing ? (
               <><button onClick={handleSave} disabled={saving} style={{ padding: 5, borderRadius: 6, background: "rgba(74,222,128,0.15)", border: "1px solid rgba(74,222,128,0.2)", color: "#4ade80", cursor: "pointer" }}><Check className="w-3.5 h-3.5" /></button>
-                <button onClick={(e) => { e.stopPropagation(); setEditing(false); setEditForm({ ...task }); setProductTags(task.product_name ? task.product_name.split("\n") : []); }} style={{ padding: 5, borderRadius: 6, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#889995", cursor: "pointer" }}><X className="w-3.5 h-3.5" /></button></>
+                <button onClick={(e) => { e.stopPropagation(); setEditing(false); setEditForm({ ...task }); setTransactionItems(parseTransactionItems(task.product_name)); }} style={{ padding: 5, borderRadius: 6, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#889995", cursor: "pointer" }}><X className="w-3.5 h-3.5" /></button></>
             ) : (
               <><a href={makeGCalLink(task)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ padding: 5, borderRadius: 6, background: "rgba(66,133,244,0.1)", border: "1px solid rgba(66,133,244,0.25)", color: "#60a5fa", cursor: "pointer", display: "inline-flex", alignItems: "center" }} title="Add to Google Calendar"><CalendarPlus className="w-3.5 h-3.5" /></a>
                 <button onClick={(e) => { e.stopPropagation(); setEditing(true); }} style={{ padding: 5, borderRadius: 6, background: "rgba(0,130,84,0.1)", border: "1px solid rgba(0,130,84,0.2)", color: "#4ade80", cursor: "pointer" }} title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
@@ -199,31 +287,149 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
           </div>
         </td>
       </tr>
+      
       {expanded && (
         <tr style={{ background: rowBg, borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
           <td colSpan={9} style={{ padding: "16px 16px 20px 48px" }}>
-            <div style={{ display: "flex", gap: 24, flexWrap: "wrap", fontSize: 12, color: "#889995", marginBottom: 12 }}>
-              <span><span style={{ color: "#556660" }}>Branch:</span> <span style={{ color: editing ? "#4ade80" : "inherit", fontWeight: editing ? 600 : 400 }}>{editing ? editForm.branch : (task.branch || "—")}</span></span>
-              <span><span style={{ color: "#556660" }}>Channel:</span> {editing ? (<select value={editForm.channel || ""} onChange={e => setEditForm(f => ({ ...f, channel: e.target.value }))} style={{ background: "#0a1612", color: "#c8d4d0", border: "1px solid rgba(255,255,255,0.1)" }}>{CHANNEL_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}</select>) : (task.channel || "—")}</span>
-              <span><span style={{ color: "#556660" }}>Amount:</span> {editing ? (<input type="number" value={editForm.amount || ""} onChange={e => setEditForm(f => ({ ...f, amount: e.target.value }))} style={{ background: "#0a1612", color: "#c8d4d0", border: "1px solid rgba(255,255,255,0.1)", width: 80 }} />) : `₹${(task.amount || 0).toLocaleString("en-IN")}`}</span>
-            </div>
-            <div style={{ marginBottom: 16 }}>
-              <span style={{ display: "block", fontSize: 10, fontWeight: 700, color: "#556660", textTransform: "uppercase", marginBottom: 6 }}>Products</span>
-              {editing ? (
-                <div>
-                  <input style={{ ...inputStyle, marginBottom: 8 }} placeholder="Add product (comma or Enter)..." value={productInput} onChange={e => setProductInput(e.target.value)} onKeyDown={handleProductKeyDown} onBlur={addTag} />
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {productTags.map((tag, idx) => (<div key={idx} style={{ display: "flex", alignItems: "center", gap: 4, background: "rgba(0,130,84,0.15)", border: "1px solid rgba(0,130,84,0.3)", padding: "2px 8px", borderRadius: 6, color: "#4ade80", fontSize: 11 }}>{tag}<X size={12} style={{ cursor: "pointer", color: "#f87171" }} onClick={() => removeTag(tag)} /></div>))}
-                  </div>
+            <div style={{ display: "flex", gap: 32, flexWrap: "wrap", fontSize: 12, color: "#889995", marginBottom: 20 }}>
+              <div style={{display: "flex", flexDirection: "column", gap: 4}}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#556660", textTransform: "uppercase" }}>Branch</span> 
+                <span style={{ color: editing ? "#4ade80" : "inherit", fontWeight: editing ? 600 : 400 }}>{editing ? editForm.branch : (task.branch || "—")}</span>
+              </div>
+              <div style={{display: "flex", flexDirection: "column", gap: 4}}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#556660", textTransform: "uppercase" }}>Channel</span> 
+                {editing ? (<select value={editForm.channel || ""} onChange={e => setEditForm(f => ({ ...f, channel: e.target.value }))} style={{ ...inputStyle, padding: "2px 6px" }}>{CHANNEL_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}</select>) : (task.channel || "—")}
+              </div>
+              
+              {!isTransactionFormat && (
+                <div style={{display: "flex", flexDirection: "column", gap: 4}}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#556660", textTransform: "uppercase" }}>Amount</span> 
+                  {editing ? (<input type="number" value={editForm.amount || ""} onChange={e => setEditForm(f => ({ ...f, amount: e.target.value }))} style={{ ...inputStyle, width: 100, padding: "2px 6px" }} />) : `₹${(task.amount || 0).toLocaleString("en-IN")}`}
                 </div>
-              ) : (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{productTags.length > 0 ? productTags.map((tag, idx) => (<span key={idx} style={{ background: "rgba(255,255,255,0.05)", padding: "2px 8px", borderRadius: 6, color: "#c8d4d0", fontSize: 11 }}>{tag}</span>)) : "—"}</div>
               )}
             </div>
-            {task.notes && <div style={{ fontSize: 12, color: "#889995", marginBottom: 8, fontStyle: "italic" }}>{task.notes}</div>}
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-              <textarea rows={2} value={reviewNote} onChange={e => setReviewNote(e.target.value)} placeholder="Add reviewer notes..." style={{ flex: 1, padding: "8px 12px", borderRadius: 8, background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", color: "#c8d4d0", fontSize: 12, resize: "none" }} />
-              <button onClick={() => onNotesUpdate(task.id, reviewNote)} style={{ padding: "8px 14px", borderRadius: 8, background: "#008254", color: "white", border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Save</button>
+
+            <div style={{ marginBottom: 24 }}>
+              <span style={{ display: "block", fontSize: 10, fontWeight: 700, color: "#556660", textTransform: "uppercase", marginBottom: 8 }}>
+                {isTransactionFormat ? "Transaction Details" : "Products"}
+              </span>
+              
+              {editing ? (
+                isTransactionFormat ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxWidth: "600px" }}>
+                    {transactionItems.map((item, idx) => (
+                      <div key={idx} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                        <input 
+                          style={{...inputStyle, flex: 2, height: "36px"}} 
+                          placeholder="Scheme / Product Name" 
+                          value={item.productName} 
+                          onChange={(e) => updateTransactionItem(idx, 'productName', e.target.value)} 
+                          required 
+                        />
+                        <div style={{ flex: 1.5, display: "flex", flexDirection: "column", gap: "4px" }}>
+                          <input 
+                            type="number" 
+                            style={{...inputStyle, width: "100%", height: "36px"}} 
+                            placeholder="Amount (₹)" 
+                            value={item.amount} 
+                            onChange={(e) => updateTransactionItem(idx, 'amount', e.target.value)} 
+                            required 
+                          />
+                          {item.amount && !isNaN(item.amount) && parseFloat(item.amount) > 0 && (
+                            <p style={{ fontSize: 9, color: "#4ade80", fontWeight: 600, fontStyle: "italic", marginLeft: "4px" }}>
+                              {numberToWords(item.amount)}
+                            </p>
+                          )}
+                        </div>
+
+                        {editForm.action === "Lumpsum & SIP" && (
+                          <select
+                            style={{ ...inputStyle, width: "70px", height: "36px", padding: "0 6px" }}
+                            value={item.type || "SIP"}
+                            onChange={(e) => updateTransactionItem(idx, 'type', e.target.value)}
+                          >
+                            <option value="SIP">SIP</option>
+                            <option value="LS">LS</option>
+                          </select>
+                        )}
+
+                        <button 
+                          type="button" 
+                          onClick={() => removeTransactionItem(idx)}
+                          disabled={transactionItems.length === 1}
+                          style={{ 
+                            width: "36px", height: "36px", borderRadius: "8px", 
+                            background: transactionItems.length === 1 ? "rgba(255,255,255,0.02)" : "rgba(248,113,113,0.1)", 
+                            border: transactionItems.length === 1 ? "1px solid rgba(255,255,255,0.05)" : "1px solid rgba(248,113,113,0.2)", 
+                            color: transactionItems.length === 1 ? "rgba(255,255,255,0.2)" : "#f87171", 
+                            display: "flex", alignItems: "center", justifyContent: "center", cursor: transactionItems.length === 1 ? "not-allowed" : "pointer", flexShrink: 0 
+                          }}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ))}
+                    
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
+                      <button 
+                        type="button" 
+                        onClick={addTransactionItem}
+                        style={{ display: "flex", alignItems: "center", gap: "6px", background: "transparent", color: "#4ade80", border: "none", fontSize: "11px", fontWeight: 700, cursor: "pointer", padding: 0 }}
+                      >
+                        <Plus size={12} /> Add Row
+                      </button>
+
+                      {totalTransactionAmount > 0 && (
+                         <div style={{ textAlign: "right" }}>
+                           <p style={{ fontSize: 12, color: "white", fontWeight: 700 }}>Total: ₹{totalTransactionAmount.toLocaleString('en-IN')}</p>
+                         </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <input style={{ ...inputStyle, marginBottom: 8, maxWidth: "400px" }} placeholder="Add product (comma or Enter)..." value={productInput} onChange={e => setProductInput(e.target.value)} onKeyDown={handleProductKeyDown} onBlur={addTag} />
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {productTags.map((tag, idx) => (<div key={idx} style={{ display: "flex", alignItems: "center", gap: 4, background: "rgba(0,130,84,0.15)", border: "1px solid rgba(0,130,84,0.3)", padding: "2px 8px", borderRadius: 6, color: "#4ade80", fontSize: 11 }}>{tag}<X size={12} style={{ cursor: "pointer", color: "#f87171" }} onClick={() => removeTag(tag)} /></div>))}
+                    </div>
+                  </div>
+                )
+              ) : (
+                isTransactionFormat ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    {parseTransactionItems(task.product_name).map((item, idx) => (
+                      <div key={idx} style={{ display: "flex", alignItems: "center", gap: 12, background: "rgba(255,255,255,0.03)", padding: "6px 12px", borderRadius: 6, width: "fit-content" }}>
+                         <span style={{ color: "#c8d4d0", fontSize: 12 }}>{item.productName}</span>
+                         {item.amount && <span style={{ color: "#4ade80", fontSize: 12, fontWeight: "bold" }}>₹{Number(item.amount).toLocaleString('en-IN')}</span>}
+                         
+                         {/* Show SIP or Lumpsum Badge if it was saved during Lumpsum & SIP */}
+                         {task.action === "Lumpsum & SIP" && item.type && (
+                           <span style={{ background: "rgba(255,255,255,0.1)", padding: "2px 6px", borderRadius: 4, fontSize: 10, color: "#fff", fontWeight: 600 }}>{item.type}</span>
+                         )}
+                      </div>
+                    ))}
+                    {task.amount && (
+                      <div style={{ marginTop: 8, color: "white", fontSize: 13, fontWeight: "bold" }}>
+                        Grand Total: ₹{task.amount.toLocaleString('en-IN')}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {productTags.length > 0 ? productTags.map((tag, idx) => (<span key={idx} style={{ background: "rgba(255,255,255,0.05)", padding: "4px 10px", borderRadius: 6, color: "#c8d4d0", fontSize: 11 }}>{tag}</span>)) : "—"}
+                  </div>
+                )
+              )}
+            </div>
+
+            {task.notes && <div style={{ fontSize: 12, color: "#889995", marginBottom: 12, fontStyle: "italic", borderLeft: "2px solid rgba(255,255,255,0.1)", paddingLeft: 10 }}>"{task.notes}"</div>}
+            
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-end", maxWidth: "600px" }}>
+              <div style={{flex: 1}}>
+                <span style={{ display: "block", fontSize: 10, fontWeight: 700, color: "#556660", textTransform: "uppercase", marginBottom: 6 }}>Reviewer Notes</span>
+                <textarea rows={2} value={reviewNote} onChange={e => setReviewNote(e.target.value)} placeholder="Add internal reviewer notes..." style={{ width: "100%", padding: "8px 12px", borderRadius: 8, background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", color: "#c8d4d0", fontSize: 12, resize: "none" }} />
+              </div>
+              <button onClick={() => onNotesUpdate(task.id, reviewNote)} style={{ padding: "8px 16px", borderRadius: 8, background: "#008254", color: "white", border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", height: "fit-content", marginBottom: "4px" }}>Save Notes</button>
             </div>
           </td>
         </tr>
@@ -265,11 +471,64 @@ export default function LiveTasks() {
     setTimeout(() => setRefreshing(false), 500);
   };
 
-  const handleStatusChange = async (taskId, newStatus) => {
+  // --- NEW LOGIC: Handling Auto-Deletion of Cancelled SIPs in Client Master ---
+  const handleTaskStatusUpdate = async (taskId, newStatus, fullTaskData) => {
     if (!taskId) return;
+    
     const update = { status: newStatus };
-    if (newStatus === "Completed") update.closure_date = format(new Date(), "yyyy-MM-dd");
+    if (newStatus === "Completed") {
+      update.closure_date = format(new Date(), "yyyy-MM-dd");
+    }
+    
+    // Update the Task Document
     await updateDoc(doc(db, "tasks", taskId), update);
+
+    // If the task is a Completed SIP Cancellation, remove those SIPs from the Client Master
+    if (newStatus === "Completed" && fullTaskData && fullTaskData.action === "SIP Cancellation" && fullTaskData.client_code) {
+      try {
+        console.log(`Processing SIP Cancellation for ${fullTaskData.client_code}...`);
+        
+        // 1. Get the schemes the user marked for cancellation in this task
+        const cancelledSchemes = parseTransactionItems(fullTaskData.product_name).map(i => i.productName.toLowerCase().trim());
+        if (cancelledSchemes.length === 0) return;
+
+        // 2. Find the Client Document
+        const clientsRef = collection(db, "clients");
+        const q = query(clientsRef, where("client_code", "==", fullTaskData.client_code));
+        const clientSnapshot = await getDocs(q);
+        
+        if (!clientSnapshot.empty) {
+          const clientDoc = clientSnapshot.docs[0];
+          const clientData = clientDoc.data();
+          
+          // 3. Find the array containing their investments (handling variations in naming)
+          const targetKey = Object.keys(clientData).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips'));
+          
+          if (targetKey && Array.isArray(clientData[targetKey])) {
+            const originalPortfolio = clientData[targetKey];
+            
+            // 4. Filter out the cancelled schemes
+            const updatedPortfolio = originalPortfolio.filter(inv => {
+              const invName = (inv.scheme_name || inv.scheme || inv.productName || inv.name || "").toLowerCase().trim();
+              
+              // If the current investment matches one of the cancelled schemes, REMOVE it (return false)
+              const isCancelled = cancelledSchemes.some(cancelledName => invName.includes(cancelledName) || cancelledName.includes(invName));
+              return !isCancelled;
+            });
+
+            // 5. Update the Client Master Document if changes were made
+            if (originalPortfolio.length !== updatedPortfolio.length) {
+              await updateDoc(doc(db, "clients", clientDoc.id), {
+                [targetKey]: updatedPortfolio
+              });
+              console.log(`Successfully removed cancelled SIPs from Client Master: ${fullTaskData.client_code}`);
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error auto-deleting cancelled SIP from Client Master:", error);
+      }
+    }
   };
 
   const handleNotesUpdate = async (taskId, reviewer_notes) => {
@@ -399,7 +658,7 @@ export default function LiveTasks() {
                         </thead>
                         <tbody>
                           {grpTasks.map(task => (
-                            <EditableRow key={task.id} task={task} onStatusChange={handleStatusChange} onNotesUpdate={handleNotesUpdate} onDelete={handleDelete} />
+                            <EditableRow key={task.id} task={task} onStatusChange={handleTaskStatusUpdate} onNotesUpdate={handleNotesUpdate} onDelete={handleDelete} />
                           ))}
                         </tbody>
                       </table>

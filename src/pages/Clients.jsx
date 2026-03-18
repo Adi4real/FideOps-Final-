@@ -1,12 +1,41 @@
 import { useState, useEffect } from "react";
-import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check } from "lucide-react";
+import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check, ListTodo } from "lucide-react";
 
 import { db } from "../firebase"; 
-import { collection, query, onSnapshot, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
+import { collection, query, onSnapshot, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, where, getDocs } from "firebase/firestore";
 
 import ClientImport from "@/components/clients/ClientImport.jsx";
 import ClientForm from "@/components/clients/ClientForm.jsx";
 import { format, parseISO } from "date-fns";
+
+// --- HELPER: Calculate Total SIP Amount ---
+const getSIPTotal = (investments) => {
+  return (investments || []).reduce((sum, inv) => {
+    const amt = parseFloat(String(inv.installment_amount).replace(/,/g, ''));
+    return sum + (isNaN(amt) ? 0 : amt);
+  }, 0);
+};
+
+// --- Helper: Parse the structured text string to find cancelled items ---
+function parseTransactionItems(rawString) {
+  if (!rawString) return [{ productName: "", amount: "", type: "SIP" }];
+  
+  const lines = rawString.split("\n");
+  const parsed = lines.map(line => {
+    const match = line.match(/^(.*?)(?:\s*\(₹([\d.,]+)\))?(?:\s*\[(.*?)\])?$/);
+    if (match) {
+      return { 
+        productName: match[1]?.trim() || "", 
+        amount: match[2]?.replace(/,/g, '')?.trim() || "",
+        type: match[3]?.trim() || "SIP"
+      };
+    }
+    return { productName: line.trim(), amount: "", type: "SIP" };
+  }).filter(i => i.productName !== "");
+  
+  return parsed.length > 0 ? parsed : [{ productName: "", amount: "", type: "SIP" }];
+}
+
 
 export default function Clients() {
   const [clients, setClients] = useState([]);
@@ -21,6 +50,10 @@ export default function Clients() {
   const [expandedInv, setExpandedInv] = useState(null);
   const [expandedGroup, setExpandedGroup] = useState(null);
 
+  // Tab State
+  const [activeTab, setActiveTab] = useState("timeline"); // "timeline" or "portfolio"
+  const [taskFilter, setTaskFilter] = useState("All");
+
   // Filter States
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState({ rm: "", tax: "", holding: "" });
@@ -29,20 +62,15 @@ export default function Clients() {
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
 
-  // ==========================================
-  // THE FIX: OPTIMIZED FIREBASE LISTENER
-  // ==========================================
   useEffect(() => {
     const clientsRef = collection(db, "clients");
     const tasksRef = collection(db, "tasks");
 
-    // This now only runs ONCE when the component mounts
     const unsubClients = onSnapshot(query(clientsRef, orderBy("client_name")), (snap) => {
       const clientData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setClients(clientData);
       setLoading(false);
       
-      // Safely update the selected client without triggering the useEffect again
       setSelected(prev => {
         if (!prev) return null;
         const updatedSelected = clientData.find(c => c.id === prev.id);
@@ -55,14 +83,12 @@ export default function Clients() {
     });
 
     return () => { unsubClients(); unsubTasks(); };
-  }, []); // <--- EMPTY ARRAY! Stops the massive read spikes!
+  }, []);
 
-  // Extract Dynamic Filter Options
   const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
   const uniqueHoldings = [...new Set(clients.map(c => c.holding_nature).filter(v => v && v !== "-"))].sort();
   const uniqueTaxes = [...new Set(clients.flatMap(c => (c.tax_status || "").split(", ")).filter(v => v && v !== "-"))].sort();
 
-  // Advanced Filtering Logic
   const filtered = clients.filter(c => {
     const matchesSearch = search.length < 1 || 
       c.client_name?.toLowerCase().includes(search.toLowerCase()) ||
@@ -76,7 +102,6 @@ export default function Clients() {
     return matchesSearch && matchesRM && matchesHolding && matchesTax;
   });
 
-  // Grouping Logic for Sidebar by CLIENT NAME
   const groupedClients = Object.values(filtered.reduce((acc, c) => {
     const key = c.client_name?.trim().toLowerCase() || "unknown";
     if (!acc[key]) acc[key] = { client_name: c.client_name || "Unknown", profiles: [] };
@@ -85,9 +110,11 @@ export default function Clients() {
   }, {})).sort((a, b) => a.client_name.localeCompare(b.client_name));
 
   const activeFilterCount = Object.values(filters).filter(v => v !== "").length;
-  const clientTasks = selected ? tasks.filter(t => t.client_code === selected.client_code) : [];
+  
+  // Client Tasks & Filtering
+  const clientTasksRaw = selected ? tasks.filter(t => t.client_code === selected.client_code) : [];
+  const clientTasks = clientTasksRaw.filter(t => taskFilter === "All" || t.status === taskFilter);
 
-  // Bulk Actions Logic
   const toggleBulkMode = () => {
     setIsBulkMode(!isBulkMode);
     setSelectedIds(new Set());
@@ -155,14 +182,52 @@ export default function Clients() {
     }
   };
 
-  const handleTaskStatusUpdate = async (taskId, newStatus) => {
+  const handleTaskStatusUpdate = async (taskId, newStatus, fullTaskData) => {
     try {
       const taskRef = doc(db, "tasks", taskId);
       const update = { status: newStatus };
-      if (newStatus === "Completed") update.closure_date = format(new Date(), "yyyy-MM-dd");
+      if (newStatus === "Completed") {
+        update.closure_date = format(new Date(), "yyyy-MM-dd");
+      }
+      
       await updateDoc(taskRef, update);
+
+      if (newStatus === "Completed" && fullTaskData && fullTaskData.action === "SIP Cancellation" && fullTaskData.client_code) {
+        console.log(`Processing SIP Cancellation for ${fullTaskData.client_code}...`);
+        
+        const cancelledSchemes = parseTransactionItems(fullTaskData.product_name).map(i => i.productName.toLowerCase().trim());
+        if (cancelledSchemes.length === 0) return;
+
+        const clientsRef = collection(db, "clients");
+        const q = query(clientsRef, where("client_code", "==", fullTaskData.client_code));
+        const clientSnapshot = await getDocs(q);
+        
+        if (!clientSnapshot.empty) {
+          const clientDoc = clientSnapshot.docs[0];
+          const clientData = clientDoc.data();
+          
+          const targetKey = Object.keys(clientData).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips'));
+          
+          if (targetKey && Array.isArray(clientData[targetKey])) {
+            const originalPortfolio = clientData[targetKey];
+            
+            const updatedPortfolio = originalPortfolio.filter(inv => {
+              const invName = (inv.scheme_name || inv.scheme || inv.productName || inv.name || "").toLowerCase().trim();
+              const isCancelled = cancelledSchemes.some(cancelledName => invName.includes(cancelledName) || cancelledName.includes(invName));
+              return !isCancelled;
+            });
+
+            if (originalPortfolio.length !== updatedPortfolio.length) {
+              await updateDoc(doc(db, "clients", clientDoc.id), {
+                [targetKey]: updatedPortfolio
+              });
+              console.log(`Successfully removed cancelled SIPs from Client Master: ${fullTaskData.client_code}`);
+            }
+          }
+        }
+      }
     } catch (error) {
-      console.error("Error updating task status:", error);
+      console.error("Error updating task status or client master:", error);
     }
   };
 
@@ -209,7 +274,7 @@ export default function Clients() {
             {!isBulkMode && !isSubItem && c.tax_status && c.tax_status !== "-" ? <span className="text-[10px] text-brand-green ml-2">({c.tax_status})</span> : ""}
           </p>
           <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
-            {c.client_code} · {c.branch} {!isBulkMode && c.investments?.length ? `(${c.investments.length} inv)` : ""}
+            {c.client_code} · {c.branch} {!isBulkMode && c.investments?.length ? `(${c.investments.length} SIPs)` : ""}
           </p>
         </div>
         {!isBulkMode && <ChevronRight className="w-4 h-4 flex-shrink-0" style={{ color: "var(--text-muted)" }} />}
@@ -242,9 +307,9 @@ export default function Clients() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
-        {/* Left: Client List */}
-        <div className="lg:col-span-1 rounded-2xl overflow-visible flex flex-col relative" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)" }}>
-          <div className="p-4 relative z-20" style={{ borderBottom: "1px solid var(--border)" }}>
+        {/* Left: Client List (FIXED SCROLL) */}
+        <div className="lg:col-span-1 rounded-2xl flex flex-col sticky top-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)", height: "calc(100vh - 120px)" }}>
+          <div className="p-4 flex-shrink-0 z-20 bg-[#0a1612] rounded-t-2xl" style={{ borderBottom: "1px solid var(--border)" }}>
             <div className="flex gap-2 relative">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: "var(--text-muted)" }} />
@@ -349,7 +414,8 @@ export default function Clients() {
             )}
           </div>
           
-          <div className="overflow-y-auto flex-1 z-10" style={{ maxHeight: "600px" }}>
+          {/* Scrollable list container */}
+          <div className="overflow-y-auto flex-1 z-10 custom-scrollbar">
             {loading ? (
               <div className="p-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>Loading...</div>
             ) : filtered.length === 0 ? (
@@ -361,6 +427,7 @@ export default function Clients() {
                 const isExpanded = expandedGroup === groupKey;
                 
                 if (isMultiple) {
+                  const groupTotalSIP = group.profiles.reduce((sum, p) => sum + getSIPTotal(p.investments), 0);
                   return (
                     <div key={groupKey} className="border-b border-[var(--border)]">
                       <button 
@@ -371,8 +438,10 @@ export default function Clients() {
                           {group.client_name?.[0]?.toUpperCase() || "?"}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-white truncate">{group.client_name}</p>
-                          <p className="text-[10px] text-brand-green mt-0.5 font-bold uppercase tracking-wider">{group.profiles.length} Tax Profiles</p>
+                          <p title={group.client_name} className="text-sm font-semibold text-white truncate">{group.client_name}</p>
+                          <p className="text-[10px] text-brand-green mt-0.5 font-bold uppercase tracking-wider">
+                            {group.profiles.length} Profiles {groupTotalSIP > 0 ? `· ₹${groupTotalSIP.toLocaleString('en-IN')} SIP` : ""}
+                          </p>
                         </div>
                         {isExpanded ? <ChevronUp className="w-4 h-4 text-white/40" /> : <ChevronDown className="w-4 h-4 text-white/40" />}
                       </button>
@@ -448,137 +517,169 @@ export default function Clients() {
                 )}
               </div>
 
-              {/* Investments Section - Grouped by Folio */}
-              <div className="rounded-2xl p-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)" }}>
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center gap-2">
-                    <Wallet className="w-5 h-5 text-brand-green" />
-                    <h3 className="font-semibold" style={{ color: "var(--text-main)" }}>Investment Portfolio</h3>
-                  </div>
-                  <span className="text-xs font-bold px-2 py-1 rounded-md" style={{ background: "rgba(0,130,84,0.2)", color: "var(--brand-green)" }}>
-                    {selected.investments?.length || 0} SIPs / Lumpsums
-                  </span>
-                </div>
+              {/* TABS CONTAINER */}
+              <div className="rounded-2xl p-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)", minHeight: "400px" }}>
                 
-                {Object.keys(groupedInvestments).length === 0 ? (
-                  <div className="text-center py-6 border border-dashed border-white/10 rounded-xl">
-                    <p className="text-sm" style={{ color: "var(--text-muted)" }}>No investment records found.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-6">
-                    {Object.entries(groupedInvestments).map(([folio, invs]) => (
-                      <div key={folio} className="p-4 rounded-xl" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--border)" }}>
-                        <div className="mb-4">
-                          <p className="text-[10px] uppercase font-bold text-[#889995] mb-1">Folio Number</p>
-                          <p className="text-sm font-mono text-white tracking-wider">{folio}</p>
-                        </div>
-                        
-                        <div className="space-y-3">
-                          {invs.map((inv, idx) => {
-                            const isExpanded = expandedInv === inv.xsip_reg_no;
-                            return (
-                              <div key={idx} className="rounded-lg overflow-hidden transition-all" style={{ border: isExpanded ? "1px solid var(--brand-green)" : "1px solid rgba(255,255,255,0.05)", background: "rgba(0,0,0,0.2)" }}>
-                                <div 
-                                  className="p-3 flex items-center justify-between cursor-pointer hover:bg-white/5"
-                                  onClick={() => setExpandedInv(isExpanded ? null : inv.xsip_reg_no)}
-                                >
-                                  <div>
-                                    <p className="text-sm font-bold text-brand-green">{inv.scheme_name}</p>
-                                    <p className="text-[10px] font-mono mt-1 text-[#889995]">xSIP: {inv.xsip_reg_no}</p>
-                                  </div>
-                                  <div className="flex items-center gap-4">
-                                    <div className="text-right">
-                                      <p className="text-sm font-bold text-white">
-                                        {inv.installment_amount !== "-" && !isNaN(inv.installment_amount) ? `₹${Number(inv.installment_amount).toLocaleString('en-IN')}` : inv.installment_amount}
-                                      </p>
-                                      <p className="text-[9px] uppercase tracking-wider text-[#889995] mt-0.5">{inv.frequency_type}</p>
-                                    </div>
-                                    {isExpanded ? <ChevronUp className="w-4 h-4 text-white/50" /> : <ChevronDown className="w-4 h-4 text-white/50" />}
-                                  </div>
-                                </div>
+                {/* Tab Navigation */}
+                <div className="flex gap-6 border-b border-white/10 mb-6">
+                  <button 
+                    onClick={() => setActiveTab('timeline')} 
+                    className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'timeline' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}
+                  >
+                    <ListTodo className="w-4 h-4" />
+                    Activity Timeline ({clientTasksRaw.length})
+                  </button>
+                  <button 
+                    onClick={() => setActiveTab('portfolio')} 
+                    className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'portfolio' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}
+                  >
+                    <Wallet className="w-4 h-4" />
+                    Investment Portfolio ({selected.investments?.length || 0})
+                  </button>
+                </div>
 
-                                {isExpanded && (
-                                  <div className="p-3 border-t border-white/5 bg-black/40 grid grid-cols-2 gap-4 animate-in slide-in-from-top-2">
-                                    <div className="flex items-center gap-2">
-                                      <Calendar className="w-3 h-3 text-brand-green" />
-                                      <div>
-                                        <p className="text-[8px] uppercase tracking-wider text-[#889995]">Start Date</p>
-                                        <p className="text-[10px] text-white">{inv.start_date}</p>
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <Calendar className="w-3 h-3 text-[#f87171]" />
-                                      <div>
-                                        <p className="text-[8px] uppercase tracking-wider text-[#889995]">End Date</p>
-                                        <p className="text-[10px] text-white">{inv.end_date}</p>
-                                      </div>
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          })}
-                        </div>
+                {/* TAB 1: ACTIVITY TIMELINE */}
+                {activeTab === "timeline" && (
+                  <div className="animate-in fade-in duration-200">
+                    <div className="flex justify-end mb-4">
+                      <select 
+                        value={taskFilter} 
+                        onChange={(e) => setTaskFilter(e.target.value)}
+                        className="bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none"
+                      >
+                        <option value="All">All Tasks</option>
+                        {["Pending","Under Process","Waiting Client","Completed","Cancelled"].map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </div>
+
+                    {clientTasks.length === 0 ? (
+                      <div className="text-center py-12 border border-dashed border-white/10 rounded-xl bg-black/20">
+                        <p className="text-sm text-[#889995]">No tasks found matching this filter.</p>
                       </div>
-                    ))}
+                    ) : (
+                      <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1 custom-scrollbar">
+                        {clientTasks.map(t => {
+                          const isCompleted = t.status === "Completed";
+                          const statusColors = {
+                            "Pending":        { bg: "rgba(251,191,36,0.12)",  text: "#fbbf24", border: "rgba(251,191,36,0.25)" },
+                            "Under Process":  { bg: "rgba(96,165,250,0.12)",  text: "#60a5fa", border: "rgba(96,165,250,0.25)" },
+                            "Waiting Client": { bg: "rgba(167,139,250,0.12)", text: "#a78bfa", border: "rgba(167,139,250,0.25)" },
+                            "Completed":      { bg: "rgba(74,222,128,0.15)",  text: "#4ade80", border: "rgba(74,222,128,0.4)" },
+                            "Cancelled":      { bg: "rgba(100,116,139,0.12)", text: "#64748b", border: "rgba(100,116,139,0.2)" },
+                          };
+                          const sc = statusColors[t.status] || statusColors["Pending"];
+
+                          return (
+                            <div key={t.id} className="flex items-start gap-3 p-3 rounded-xl transition-all"
+                              style={{ 
+                                border: isCompleted ? `1px solid ${sc.border}` : "1px solid var(--border)", 
+                                background: isCompleted ? sc.bg : "rgba(255,255,255,0.02)" 
+                              }}>
+                              <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: sc.text }} />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-mono text-xs font-bold" style={{ color: isCompleted ? "#4ade80" : "var(--brand-green)" }}>{t.task_id}</span>
+                                  <span className="text-xs font-medium" style={{ color: "var(--text-main)" }}>{t.action}</span>
+                                  
+                                  <select
+                                    value={t.status}
+                                    onChange={(e) => handleTaskStatusUpdate(t.id, e.target.value, t)} 
+                                    style={{ 
+                                      padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600, 
+                                      background: isCompleted ? "rgba(0,0,0,0.2)" : sc.bg, border: `1px solid ${sc.border}`, color: sc.text, cursor: "pointer" 
+                                    }}
+                                  >
+                                    {["Pending","Under Process","Waiting Client","Completed","Cancelled"].map(s => <option key={s} value={s} style={{background: "#0a1612"}}>{s}</option>)}
+                                  </select>
+                                </div>
+                                <p className="text-xs mt-1" style={{ color: isCompleted ? "rgba(200, 212, 208, 0.7)" : "var(--text-muted)" }}>
+                                  {t.entry_date && format(parseISO(t.entry_date), "dd MMM yyyy")} · {t.assigned_to}
+                                  {t.closure_date && ` · Closed: ${format(parseISO(t.closure_date), "dd MMM yyyy")}`}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
 
-              {/* Activity Timeline */}
-              <div className="rounded-2xl p-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)" }}>
-                <h3 className="font-semibold mb-4" style={{ color: "var(--text-main)" }}>Activity Timeline ({clientTasks.length} tasks)</h3>
-                {clientTasks.length === 0 ? (
-                  <p className="text-sm" style={{ color: "var(--text-muted)" }}>No tasks for this client yet.</p>
-                ) : (
-                  <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
-                    {clientTasks.map(t => {
-                      const isCompleted = t.status === "Completed";
-                      const statusColors = {
-                        "Pending":        { bg: "rgba(251,191,36,0.12)",  text: "#fbbf24", border: "rgba(251,191,36,0.25)" },
-                        "Under Process":  { bg: "rgba(96,165,250,0.12)",  text: "#60a5fa", border: "rgba(96,165,250,0.25)" },
-                        "Waiting Client": { bg: "rgba(167,139,250,0.12)", text: "#a78bfa", border: "rgba(167,139,250,0.25)" },
-                        "Completed":      { bg: "rgba(74,222,128,0.15)",  text: "#4ade80", border: "rgba(74,222,128,0.4)" },
-                        "Cancelled":      { bg: "rgba(100,116,139,0.12)", text: "#64748b", border: "rgba(100,116,139,0.2)" },
-                      };
-                      const sc = statusColors[t.status] || statusColors["Pending"];
+                {/* TAB 2: INVESTMENT PORTFOLIO */}
+                {activeTab === "portfolio" && (
+                  <div className="animate-in fade-in duration-200">
+                    <div className="flex justify-end mb-4">
+                      <span className="text-xs font-bold px-3 py-1.5 rounded-lg border" style={{ background: "rgba(0,130,84,0.1)", borderColor: "rgba(0,130,84,0.3)", color: "var(--brand-green)" }}>
+                        Total SIPs: ₹{getSIPTotal(selected.investments).toLocaleString('en-IN')}
+                      </span>
+                    </div>
 
-                      return (
-                        <div key={t.id} className="flex items-start gap-3 p-3 rounded-xl transition-all"
-                          style={{ 
-                            border: isCompleted ? `1px solid ${sc.border}` : "1px solid var(--border)", 
-                            background: isCompleted ? sc.bg : "rgba(255,255,255,0.02)" 
-                          }}>
-                          <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: sc.text }} />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-mono text-xs font-bold" style={{ color: isCompleted ? "#4ade80" : "var(--brand-green)" }}>{t.task_id}</span>
-                              <span className="text-xs font-medium" style={{ color: "var(--text-main)" }}>{t.action}</span>
-                              <select
-                                value={t.status}
-                                onChange={(e) => handleTaskStatusUpdate(t.id, e.target.value)}
-                                style={{ 
-                                  padding: "2px 8px", 
-                                  borderRadius: 6, 
-                                  fontSize: 11, 
-                                  fontWeight: 600, 
-                                  background: isCompleted ? "rgba(0,0,0,0.2)" : sc.bg, 
-                                  border: `1px solid ${sc.border}`, 
-                                  color: sc.text, 
-                                  cursor: "pointer" 
-                                }}
-                              >
-                                {["Pending","Under Process","Waiting Client","Completed","Cancelled"].map(s => <option key={s} value={s} style={{background: "#0a1612"}}>{s}</option>)}
-                              </select>
+                    {Object.keys(groupedInvestments).length === 0 ? (
+                      <div className="text-center py-12 border border-dashed border-white/10 rounded-xl bg-black/20">
+                        <p className="text-sm text-[#889995] mb-4">No investment records found.</p>
+                        <button onClick={() => openEdit(selected)} className="text-xs font-bold text-brand-green border border-brand-green/30 px-4 py-2 rounded-lg hover:bg-brand-green hover:text-white transition-all">
+                          + Add First Investment
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-6 max-h-[500px] overflow-y-auto pr-1 custom-scrollbar">
+                        {Object.entries(groupedInvestments).map(([folio, invs]) => (
+                          <div key={folio} className="p-4 rounded-xl" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--border)" }}>
+                            <div className="mb-4">
+                              <p className="text-[10px] uppercase font-bold text-[#889995] mb-1">Folio Number</p>
+                              <p className="text-sm font-mono text-white tracking-wider">{folio}</p>
                             </div>
-                            <p className="text-xs mt-1" style={{ color: isCompleted ? "rgba(200, 212, 208, 0.7)" : "var(--text-muted)" }}>
-                              {t.entry_date && format(parseISO(t.entry_date), "dd MMM yyyy")} · {t.assigned_to}
-                              {t.closure_date && ` · Closed: ${format(parseISO(t.closure_date), "dd MMM yyyy")}`}
-                            </p>
+                            
+                            <div className="space-y-3">
+                              {invs.map((inv, idx) => {
+                                const isExpanded = expandedInv === inv.xsip_reg_no;
+                                return (
+                                  <div key={idx} className="rounded-lg overflow-hidden transition-all" style={{ border: isExpanded ? "1px solid var(--brand-green)" : "1px solid rgba(255,255,255,0.05)", background: "rgba(0,0,0,0.2)" }}>
+                                    <div 
+                                      className="p-3 flex items-center justify-between cursor-pointer hover:bg-white/5"
+                                      onClick={() => setExpandedInv(isExpanded ? null : inv.xsip_reg_no)}
+                                    >
+                                      <div>
+                                        <p className="text-sm font-bold text-brand-green">{inv.scheme_name}</p>
+                                        <p className="text-[10px] font-mono mt-1 text-[#889995]">xSIP: {inv.xsip_reg_no}</p>
+                                      </div>
+                                      <div className="flex items-center gap-4">
+                                        <div className="text-right">
+                                          <p className="text-sm font-bold text-white">
+                                            {inv.installment_amount !== "-" && !isNaN(inv.installment_amount) ? `₹${Number(inv.installment_amount).toLocaleString('en-IN')}` : inv.installment_amount}
+                                          </p>
+                                          <p className="text-[9px] uppercase tracking-wider text-[#889995] mt-0.5">{inv.frequency_type}</p>
+                                        </div>
+                                        {isExpanded ? <ChevronUp className="w-4 h-4 text-white/50" /> : <ChevronDown className="w-4 h-4 text-white/50" />}
+                                      </div>
+                                    </div>
+
+                                    {isExpanded && (
+                                      <div className="p-3 border-t border-white/5 bg-black/40 grid grid-cols-2 gap-4 animate-in slide-in-from-top-2">
+                                        <div className="flex items-center gap-2">
+                                          <Calendar className="w-3 h-3 text-brand-green" />
+                                          <div>
+                                            <p className="text-[8px] uppercase tracking-wider text-[#889995]">Start Date</p>
+                                            <p className="text-[10px] text-white">{inv.start_date}</p>
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <Calendar className="w-3 h-3 text-[#f87171]" />
+                                          <div>
+                                            <p className="text-[8px] uppercase tracking-wider text-[#889995]">End Date</p>
+                                            <p className="text-[10px] text-white">{inv.end_date}</p>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

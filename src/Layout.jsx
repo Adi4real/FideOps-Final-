@@ -5,7 +5,7 @@ import { createPageUrl } from "@/utils";
 
 import {
   LayoutDashboard, Plus, Users, ListChecks, BarChart3, Calendar,
-  Menu, X, LogOut, ArrowLeft
+  Menu, X, LogOut, ArrowLeft, TrendingUp
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -30,6 +30,7 @@ const navGroups = [
     items: [
       { label: "Clients", icon: Users, page: "Clients" },
       { label: "Reports", icon: BarChart3, page: "Reports" },
+      { label: "Investment Analytics", icon: TrendingUp, page: "InvestmentReport" },
       { label: "Calendar", icon: Calendar, page: "CalendarView" },
     ],
   },
@@ -48,7 +49,8 @@ export default function Layout({ children, currentPageName }) {
   }, []);
 
   return (
-    <div className="min-h-screen flex" style={{ background: "var(--bg-black)", color: "var(--text-main)" }}>
+    // FIX: Changed min-h-screen to h-screen and added overflow-hidden
+    <div className="h-screen flex overflow-hidden" style={{ background: "var(--bg-black)", color: "var(--text-main)" }}>
       <style>{`
         :root {
           --brand-green: #008254;
@@ -62,7 +64,12 @@ export default function Layout({ children, currentPageName }) {
           --transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
         }
         * { font-family: 'Inter', system-ui, sans-serif; }
-        body { background-color: var(--bg-black) !important; color: var(--text-main) !important; }
+        body { 
+          background-color: var(--bg-black) !important; 
+          color: var(--text-main) !important; 
+          margin: 0; 
+          overflow: hidden; /* Prevents body-level scrolling */
+        }
         input, select, textarea { background: var(--input-bg) !important; border-color: var(--border) !important; color: var(--text-main) !important; }
         input::placeholder, textarea::placeholder { color: var(--text-muted) !important; }
         input:focus, select:focus, textarea:focus { border-color: var(--brand-green) !important; outline: none !important; }
@@ -72,11 +79,12 @@ export default function Layout({ children, currentPageName }) {
       <aside className={cn(
         "fixed inset-y-0 left-0 z-50 w-64 flex flex-col transition-transform duration-300",
         sidebarOpen ? "translate-x-0" : "-translate-x-full",
-        "lg:translate-x-0 lg:static lg:flex"
+        // FIX: Added lg:h-full and flex-shrink-0 to keep sidebar size constant
+        "lg:translate-x-0 lg:static lg:flex lg:h-full flex-shrink-0"
       )} style={{ background: "#040d0a", borderRight: "1px solid var(--border)" }}>
         
         {/* Logo */}
-        <div className="px-6 py-5" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div className="px-6 py-5 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
           <div className="flex items-center gap-3">
             <img
               src="/logo.png"
@@ -92,7 +100,6 @@ export default function Layout({ children, currentPageName }) {
 
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-          
           {/* Go Back Button */}
           <div className="mb-6 px-1">
             <a 
@@ -136,7 +143,7 @@ export default function Layout({ children, currentPageName }) {
 
         {/* User */}
         {user && (
-          <div className="px-4 py-4" style={{ borderTop: "1px solid var(--border)" }}>
+          <div className="px-4 py-4 flex-shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "rgba(0,130,84,0.2)" }}>
                 <span className="text-xs font-bold" style={{ color: "var(--brand-green)" }}>
@@ -160,10 +167,10 @@ export default function Layout({ children, currentPageName }) {
         <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
-      {/* Main */}
+      {/* Main Area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top bar */}
-        <header className="h-14 flex items-center px-4 gap-4 sticky top-0 z-30" style={{ background: "#040d0a", borderBottom: "1px solid var(--border)" }}>
+        <header className="h-14 flex-shrink-0 flex items-center px-4 gap-4 sticky top-0 z-30" style={{ background: "#040d0a", borderBottom: "1px solid var(--border)" }}>
           <button
             className="lg:hidden"
             style={{ color: "var(--text-muted)" }}
@@ -180,8 +187,8 @@ export default function Layout({ children, currentPageName }) {
           </div>
         </header>
 
-        {/* Page content */}
-        <main className="flex-1 overflow-auto">
+        {/* Page content - This is the only part that will scroll */}
+        <main className="flex-1 overflow-y-auto">
           {children}
         </main>
       </div>
