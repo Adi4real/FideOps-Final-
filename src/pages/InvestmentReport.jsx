@@ -3,12 +3,12 @@ import { format, parseISO } from "date-fns";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ComposedChart
 } from "recharts";
-import { RefreshCw, Save, Pencil, LineChart as ChartIcon, Users, Wallet, Database } from "lucide-react";
+import { RefreshCw, Save, Pencil, LineChart as ChartIcon, Users, Wallet, Database, Activity } from "lucide-react";
 import * as XLSX from "xlsx";
 
 // Firebase Imports
 import { db } from "../firebase"; 
-import { collection, query, getDocs, orderBy, where, doc, setDoc } from "firebase/firestore";
+import { collection, query, getDocs, orderBy, where, doc, setDoc, onSnapshot } from "firebase/firestore";
 
 const SIP_CREATE_ACTIONS = ["SIP Registration", "SIP Restart", "SIP Top-up"];
 const LS_CREATE_ACTIONS = ["Lumpsum Purchase", "NFO Purchase"];
@@ -60,8 +60,6 @@ export default function InvestmentReport() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(format(new Date(), "yyyy-MM"));
-  
-  // Default to "All"
   const [selectedFY, setSelectedFY] = useState("All");
 
   const formRef = useRef(null);
@@ -72,23 +70,31 @@ export default function InvestmentReport() {
     aum: "", purchase: "", redemption: ""
   });
 
-  const fetchTasksForMonth = async () => {
-    setRefreshing(true);
-    try {
-      const startOfMonth = `${selectedMonth}-01`;
-      const endOfMonth = `${selectedMonth}-31`; 
-      const qTasks = query(
-        collection(db, "tasks"), 
-        where("entry_date", ">=", startOfMonth),
-        where("entry_date", "<=", endOfMonth)
-      );
-      const snapshotTasks = await getDocs(qTasks);
-      const monthTasks = snapshotTasks.docs
-        .map(doc => ({ id: doc.id, ...doc.data() }))
-        .filter(t => t.status === "Completed");
+  // --- SMART READ OPTIMIZATION: Live Sync specifically for RM Tab ---
+  useEffect(() => {
+    // Only fetch tasks and attach listeners if we are looking at the RM Tab
+    if (activeTab !== "rm") return;
+
+    const startOfMonth = `${selectedMonth}-01`;
+    const endOfMonth = `${selectedMonth}-31`; 
+    
+    // Strict query: Only read tasks from this month that are "Completed"
+    const qTasks = query(
+      collection(db, "tasks"), 
+      where("entry_date", ">=", startOfMonth),
+      where("entry_date", "<=", endOfMonth),
+      where("status", "==", "Completed")
+    );
+
+    const unsubscribe = onSnapshot(qTasks, (snapshotTasks) => {
+      const monthTasks = snapshotTasks.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setTasks(monthTasks);
-    } catch (error) { console.error(error); } finally { setRefreshing(false); }
-  };
+    }, (error) => {
+      console.error("Error with live task sync:", error);
+    });
+
+    return () => unsubscribe(); // Cleanup listener when month or tab changes
+  }, [activeTab, selectedMonth]);
 
   const fetchMonthlyStats = useCallback(async () => {
     try {
@@ -96,7 +102,7 @@ export default function InvestmentReport() {
       const snapshotStats = await getDocs(qStats);
       let rawStats = snapshotStats.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       
-      // CRITICAL FIX: Strictly sort chronologically before doing ANY math
+      // Sort chronologically before math
       rawStats.sort((a, b) => a.monthId.localeCompare(b.monthId));
 
       let processedStats = [];
@@ -183,7 +189,6 @@ export default function InvestmentReport() {
              year = d.getFullYear();
              month = String(d.getMonth() + 1).padStart(2, '0');
           } else if (typeof d === 'string') {
-             // Robust Indian Date parsing (handles 31-03-26 properly)
              const dateStr = d.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
              const parts = dateStr.split(/[-/]/);
              if (parts.length >= 3) {
@@ -212,29 +217,56 @@ export default function InvestmentReport() {
     reader.readAsArrayBuffer(file);
   };
 
-  // Filter data by Financial Year
   const chartData = useMemo(() => monthlyStats.filter(s => selectedFY === "All" || s.financialYear === selectedFY), [monthlyStats, selectedFY]);
-  
-  // Extract unique Financial Years
   const availableFYs = ["All", ...new Set(monthlyStats.map(s => s.financialYear))].sort().reverse();
 
+  // --- RM AGGREGATION LOGIC (Strictly based on Action types & Amount) ---
   const { reportData, grandTotals } = useMemo(() => {
     const stats = {};
-    let totals = { sipQty: 0, sipAmt: 0, lsQty: 0, lsAmt: 0, redCeased: 0 };
+    let totals = { sip: 0, purchase: 0, redemption: 0, sipCease: 0, netSip: 0, netPurchase: 0 };
+    
     tasks.forEach(task => {
       const rm = task.assigned_to || "Unassigned";
-      if (!stats[rm]) stats[rm] = { name: rm, sipQty: 0, sipAmt: 0, lsQty: 0, lsAmt: 0, redCeased: 0 };
-      let sQty=0, sAmt=0, lQty=0, lAmt=0, cQty=0;
-      const lines = (task.product_name || "").split("\n").filter(l => l.trim() !== "");
-      if (SIP_CREATE_ACTIONS.includes(task.action)) { sQty += lines.length || 1; sAmt += task.amount || 0; } 
-      else if (LS_CREATE_ACTIONS.includes(task.action)) { lQty += lines.length || 1; lAmt += task.amount || 0; }
-      else if (SIP_CEASE_ACTIONS.includes(task.action) || REDEMPTION_ACTIONS.includes(task.action)) { cQty += lines.length || 1; }
-      stats[rm].sipQty += sQty; stats[rm].sipAmt += sAmt; stats[rm].lsQty += lQty; stats[rm].lsAmt += lAmt;
-      stats[rm].redCeased += cQty;
-      totals.sipQty += sQty; totals.sipAmt += sAmt; totals.lsQty += lQty; totals.lsAmt += lAmt;
-      totals.redCeased += cQty;
+      if (!stats[rm]) stats[rm] = { name: rm, sip: 0, purchase: 0, redemption: 0, sipCease: 0, netSip: 0, netPurchase: 0 };
+      
+      let sAmt = 0, pAmt = 0, rAmt = 0, cAmt = 0;
+      const taskAmt = Number(task.amount) || 0;
+
+      if (SIP_CREATE_ACTIONS.includes(task.action)) { sAmt += taskAmt; } 
+      else if (LS_CREATE_ACTIONS.includes(task.action)) { pAmt += taskAmt; }
+      else if (SIP_CEASE_ACTIONS.includes(task.action)) { cAmt += taskAmt; }
+      else if (REDEMPTION_ACTIONS.includes(task.action)) { rAmt += taskAmt; }
+      else if (task.action === "Lumpsum & SIP") {
+        const lines = (task.product_name || "").split("\n");
+        lines.forEach(line => {
+            const amtMatch = line.match(/\(₹([\d.,]+)\)/);
+            const typeMatch = line.match(/\[(.*?)\]/);
+            const amt = amtMatch ? parseFloat(amtMatch[1].replace(/,/g, '')) : 0;
+            const type = typeMatch ? typeMatch[1].trim() : "SIP";
+            if (type === "SIP") sAmt += amt;
+            else if (type === "LS") pAmt += amt;
+        });
+      }
+
+      stats[rm].sip += sAmt;
+      stats[rm].purchase += pAmt;
+      stats[rm].sipCease += cAmt;
+      stats[rm].redemption += rAmt;
+      stats[rm].netSip += (sAmt - cAmt);
+      stats[rm].netPurchase += (pAmt - rAmt);
+
+      totals.sip += sAmt;
+      totals.purchase += pAmt;
+      totals.sipCease += cAmt;
+      totals.redemption += rAmt;
+      totals.netSip += (sAmt - cAmt);
+      totals.netPurchase += (pAmt - rAmt);
     });
-    return { reportData: Object.values(stats).sort((a, b) => (b.sipAmt + b.lsAmt) - (a.sipAmt + a.lsAmt)), grandTotals: totals };
+
+    return { 
+      reportData: Object.values(stats).sort((a, b) => (b.sip + b.purchase) - (a.sip + a.purchase)), 
+      grandTotals: totals 
+    };
   }, [tasks]);
 
   if (loading) return <div className="h-screen flex items-center justify-center text-[#889995]">Loading analytics...</div>;
@@ -348,7 +380,6 @@ export default function InvestmentReport() {
                 </thead>
                 <tbody>
                   {[...monthlyStats].reverse().map(s => {
-                    // Only show rows that match the selected Financial Year (if not "All")
                     if (selectedFY !== "All" && s.financialYear !== selectedFY) return null;
 
                     const aumColor = s.aumChange >= 0 ? "#4ade80" : "#f87171";
@@ -388,21 +419,28 @@ export default function InvestmentReport() {
           </>
         ) : (
           <div className="animate-in fade-in">
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginBottom: 20 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20 }}>
+               <div style={{ display: "flex", alignItems: "center", gap: 12, background: "rgba(0,130,84,0.1)", padding: "10px 16px", borderRadius: 12, border: "1px solid rgba(0,130,84,0.3)"}}>
+                  <Activity size={20} color="#4ade80" />
+                  <div>
+                    <p style={{fontSize: 10, color: "#889995", fontWeight: 800, textTransform: "uppercase"}}>Status</p>
+                    <p style={{fontSize: 13, color: "#4ade80", fontWeight: 700}}>Live Syncing Completed Tasks</p>
+                  </div>
+               </div>
               <input type="month" value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} style={{ background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", color: "#4ade80", padding: "8px 16px", borderRadius: 10, outline: "none", fontWeight: 700 }} />
-              <button onClick={fetchTasksForMonth} disabled={refreshing} style={{ padding: "8px 16px", borderRadius: 10, background: "#008254", color: "white", border: "none", fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
-                <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /> Sync Month Tasks
-              </button>
             </div>
             
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 24 }}>
               {[
-                { label: "SIP Sourced", amount: grandTotals.sipAmt, color: "#4ade80" },
-                { label: "Lumpsum Sourced", amount: grandTotals.lsAmt, color: "#60a5fa" },
-                { label: "Redeem/Cease Actions", count: grandTotals.redCeased, color: "#f87171" }
+                { label: "SIP Sourced", amount: grandTotals.sip, color: "#4ade80" },
+                { label: "SIP Ceased", amount: grandTotals.sipCease, color: "#f87171" },
+                { label: "Net SIP Sourced", amount: grandTotals.netSip, color: grandTotals.netSip >= 0 ? "#4ade80" : "#f87171" },
+                { label: "Lumpsum Sourced", amount: grandTotals.purchase, color: "#60a5fa" },
+                { label: "Redemptions", amount: grandTotals.redemption, color: "#f87171" },
+                { label: "Net Lumpsum", amount: grandTotals.netPurchase, color: grandTotals.netPurchase >= 0 ? "#60a5fa" : "#f87171" },
               ].map(s => (
                 <div key={s.label} style={cardStyle}>
-                  <p style={{ fontSize: 28, fontWeight: 800, color: s.color, margin: 0 }}>{s.amount !== undefined ? formatL(s.amount) : s.count}</p>
+                  <p style={{ fontSize: 26, fontWeight: 800, color: s.color, margin: 0 }}>{formatL(s.amount)}</p>
                   <p style={{ fontSize: 11, color: "#889995", fontWeight: 600, marginTop: 4, textTransform: "uppercase" }}>{s.label}</p>
                 </div>
               ))}
@@ -413,18 +451,24 @@ export default function InvestmentReport() {
                 <thead>
                   <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)", color: "#556660", fontSize: 10, textTransform: "uppercase" }}>
                     <th style={{ padding: 12, textAlign: "left" }}>RM Name</th>
-                    <th style={{ padding: 12, textAlign: "right" }}>SIP Book Sourced</th>
-                    <th style={{ padding: 12, textAlign: "right" }}>Lumpsum Sourced</th>
-                    <th style={{ padding: 12, textAlign: "right" }}>Redeem/Cease</th>
+                    <th style={{ padding: 12, textAlign: "right" }}>SIP</th>
+                    <th style={{ padding: 12, textAlign: "right" }}>SIP Cease</th>
+                    <th style={{ padding: 12, textAlign: "right" }}>Net SIP</th>
+                    <th style={{ padding: 12, textAlign: "right" }}>Purchase</th>
+                    <th style={{ padding: 12, textAlign: "right" }}>Redemption</th>
+                    <th style={{ padding: 12, textAlign: "right" }}>Net Purchase</th>
                   </tr>
                 </thead>
                 <tbody>
                   {reportData.map(row => (
                     <tr key={row.name} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
                       <td style={{ padding: 12, fontWeight: 700, color: "#c8d4d0" }}>{row.name}</td>
-                      <td style={{ padding: 12, textAlign: "right", color: "#4ade80", fontWeight: 600 }}>{formatL(row.sipAmt)}</td>
-                      <td style={{ padding: 12, textAlign: "right", color: "#60a5fa", fontWeight: 600 }}>{formatL(row.lsAmt)}</td>
-                      <td style={{ padding: 12, textAlign: "right", color: "#f87171", fontWeight: 600 }}>{row.redCeased}</td>
+                      <td style={{ padding: 12, textAlign: "right", color: "#4ade80", fontWeight: 600 }}>{formatL(row.sip)}</td>
+                      <td style={{ padding: 12, textAlign: "right", color: "#f87171", fontWeight: 600 }}>{formatL(row.sipCease)}</td>
+                      <td style={{ padding: 12, textAlign: "right", color: row.netSip >= 0 ? "#4ade80" : "#f87171", fontWeight: 700 }}>{formatL(row.netSip)}</td>
+                      <td style={{ padding: 12, textAlign: "right", color: "#60a5fa", fontWeight: 600 }}>{formatL(row.purchase)}</td>
+                      <td style={{ padding: 12, textAlign: "right", color: "#f87171", fontWeight: 600 }}>{formatL(row.redemption)}</td>
+                      <td style={{ padding: 12, textAlign: "right", color: row.netPurchase >= 0 ? "#60a5fa" : "#f87171", fontWeight: 700 }}>{formatL(row.netPurchase)}</td>
                     </tr>
                   ))}
                 </tbody>

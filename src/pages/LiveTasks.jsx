@@ -6,7 +6,6 @@ import { AlertTriangle, Clock, CalendarCheck, Search, RefreshCw, Pencil, Check, 
 import { db } from "../firebase"; 
 import { collection, query, onSnapshot, orderBy, doc, updateDoc, deleteDoc, getDocs, where } from "firebase/firestore";
 
-// --- Branch Mapping Logic ---
 function getBranch(rm) {
   if (!rm) return "";
   if (rm === "Ujjwal and Joel") return "Katni Branch";
@@ -15,12 +14,10 @@ function getBranch(rm) {
   return rm;
 }
 
-// --- Helper: Convert Number to Indian Words ---
 function numberToWords(num) {
   if (num === 0 || !num || isNaN(num)) return "";
   const a = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
   const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
-
   const convert = (n) => {
     if (n < 20) return a[n];
     if (n < 100) return b[Math.floor(n / 10)] + (n % 10 !== 0 ? " " + a[n % 10] : "");
@@ -29,12 +26,9 @@ function numberToWords(num) {
     if (n < 10000000) return convert(Math.floor(n / 100000)) + " Lakh" + (n % 100000 !== 0 ? " " + convert(n % 100000) : "");
     return convert(Math.floor(n / 10000000)) + " Crore" + (n % 10000000 !== 0 ? " " + convert(n % 10000000) : "");
   };
-
   return convert(parseInt(num)) + " Rupees Only";
 }
 
-
-// Configuration Constants
 const ACTION_OPTIONS = [
   "Account Opening", "Demat Transfer", "KYC Update", "Advisory", "General Follow-up",
   "SIP Registration", "SIP Cancellation", "Redemption", "Lumpsum Purchase", 
@@ -114,10 +108,8 @@ function exportToExcel(allTasks, selectedYear) {
   URL.revokeObjectURL(url);
 }
 
-// --- Helper: Parse the structured text string back into Objects for Editing ---
 function parseTransactionItems(rawString) {
   if (!rawString) return [{ productName: "", amount: "", type: "SIP" }];
-  
   const lines = rawString.split("\n");
   const parsed = lines.map(line => {
     const match = line.match(/^(.*?)(?:\s*\(₹([\d.,]+)\))?(?:\s*\[(.*?)\])?$/);
@@ -130,7 +122,6 @@ function parseTransactionItems(rawString) {
     }
     return { productName: line.trim(), amount: "", type: "SIP" };
   }).filter(i => i.productName !== "");
-  
   return parsed.length > 0 ? parsed : [{ productName: "", amount: "", type: "SIP" }];
 }
 
@@ -151,7 +142,6 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
   const pr = PRIORITY_STYLE[task.priority] || PRIORITY_STYLE["Medium"];
   const rowBg = ROW_BG[task.status] || "transparent";
 
-  // Normal Tags Logic
   const [productInput, setProductInput] = useState("");
   const addTag = () => {
     const val = productInput.trim();
@@ -165,7 +155,6 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
     if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addTag(); }
   };
 
-  // Transaction Items Logic
   const addTransactionItem = () => setTransactionItems([...transactionItems, { productName: "", amount: "", type: "SIP" }]);
   const updateTransactionItem = (index, field, value) => {
     const newItems = [...transactionItems];
@@ -402,7 +391,6 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
                          <span style={{ color: "#c8d4d0", fontSize: 12 }}>{item.productName}</span>
                          {item.amount && <span style={{ color: "#4ade80", fontSize: 12, fontWeight: "bold" }}>₹{Number(item.amount).toLocaleString('en-IN')}</span>}
                          
-                         {/* Show SIP or Lumpsum Badge if it was saved during Lumpsum & SIP */}
                          {task.action === "Lumpsum & SIP" && item.type && (
                            <span style={{ background: "rgba(255,255,255,0.1)", padding: "2px 6px", borderRadius: 4, fontSize: 10, color: "#fff", fontWeight: 600 }}>{item.type}</span>
                          )}
@@ -471,7 +459,7 @@ export default function LiveTasks() {
     setTimeout(() => setRefreshing(false), 500);
   };
 
-  // --- NEW LOGIC: Handling Auto-Deletion of Cancelled SIPs in Client Master ---
+  // --- NEW LOGIC: Handling Auto-Addition & Deletion in Client Master ---
   const handleTaskStatusUpdate = async (taskId, newStatus, fullTaskData) => {
     if (!taskId) return;
     
@@ -480,19 +468,10 @@ export default function LiveTasks() {
       update.closure_date = format(new Date(), "yyyy-MM-dd");
     }
     
-    // Update the Task Document
     await updateDoc(doc(db, "tasks", taskId), update);
 
-    // If the task is a Completed SIP Cancellation, remove those SIPs from the Client Master
-    if (newStatus === "Completed" && fullTaskData && fullTaskData.action === "SIP Cancellation" && fullTaskData.client_code) {
+    if (newStatus === "Completed" && fullTaskData && fullTaskData.client_code) {
       try {
-        console.log(`Processing SIP Cancellation for ${fullTaskData.client_code}...`);
-        
-        // 1. Get the schemes the user marked for cancellation in this task
-        const cancelledSchemes = parseTransactionItems(fullTaskData.product_name).map(i => i.productName.toLowerCase().trim());
-        if (cancelledSchemes.length === 0) return;
-
-        // 2. Find the Client Document
         const clientsRef = collection(db, "clients");
         const q = query(clientsRef, where("client_code", "==", fullTaskData.client_code));
         const clientSnapshot = await getDocs(q);
@@ -500,33 +479,41 @@ export default function LiveTasks() {
         if (!clientSnapshot.empty) {
           const clientDoc = clientSnapshot.docs[0];
           const clientData = clientDoc.data();
-          
-          // 3. Find the array containing their investments (handling variations in naming)
-          const targetKey = Object.keys(clientData).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips'));
-          
-          if (targetKey && Array.isArray(clientData[targetKey])) {
-            const originalPortfolio = clientData[targetKey];
-            
-            // 4. Filter out the cancelled schemes
-            const updatedPortfolio = originalPortfolio.filter(inv => {
+          const targetKey = Object.keys(clientData).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
+          let currentPortfolio = clientData[targetKey] || [];
+
+          if (fullTaskData.action === "SIP Cancellation") {
+            const cancelledSchemes = parseTransactionItems(fullTaskData.product_name).map(i => i.productName.toLowerCase().trim());
+            const updatedPortfolio = currentPortfolio.filter(inv => {
               const invName = (inv.scheme_name || inv.scheme || inv.productName || inv.name || "").toLowerCase().trim();
-              
-              // If the current investment matches one of the cancelled schemes, REMOVE it (return false)
-              const isCancelled = cancelledSchemes.some(cancelledName => invName.includes(cancelledName) || cancelledName.includes(invName));
-              return !isCancelled;
+              return !cancelledSchemes.some(c => invName.includes(c) || c.includes(invName));
             });
 
-            // 5. Update the Client Master Document if changes were made
-            if (originalPortfolio.length !== updatedPortfolio.length) {
-              await updateDoc(doc(db, "clients", clientDoc.id), {
-                [targetKey]: updatedPortfolio
-              });
-              console.log(`Successfully removed cancelled SIPs from Client Master: ${fullTaskData.client_code}`);
+            if (currentPortfolio.length !== updatedPortfolio.length) {
+              await updateDoc(doc(db, "clients", clientDoc.id), { [targetKey]: updatedPortfolio });
+            }
+          } 
+          else if (fullTaskData.action === "SIP Registration") { // CHANGED: Only SIP Registration
+            const newItems = parseTransactionItems(fullTaskData.product_name).filter(i => i.productName && i.amount);
+            if (newItems.length > 0) {
+              const addedInvestments = newItems.map(item => ({
+                scheme_name: item.productName,
+                installment_amount: item.amount,
+                frequency_type: item.type === "LS" ? "One-time" : "Monthly",
+                folio_number: "Pending Folio",
+                xsip_reg_no: `TEMP-${Math.floor(100000 + Math.random() * 900000)}`,
+                start_date: format(new Date(), "dd-MMM-yyyy"),
+                end_date: "-",
+                type: item.type || "SIP"
+              }));
+
+              const updatedPortfolio = [...currentPortfolio, ...addedInvestments];
+              await updateDoc(doc(db, "clients", clientDoc.id), { [targetKey]: updatedPortfolio });
             }
           }
         }
       } catch (error) {
-        console.error("Error auto-deleting cancelled SIP from Client Master:", error);
+        console.error("Error auto-syncing portfolio:", error);
       }
     }
   };

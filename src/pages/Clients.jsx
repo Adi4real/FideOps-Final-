@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check, ListTodo } from "lucide-react";
+import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check, ListTodo, Info } from "lucide-react";
 
 import { db } from "../firebase"; 
 import { collection, query, onSnapshot, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, where, getDocs } from "firebase/firestore";
@@ -49,9 +49,14 @@ export default function Clients() {
   
   const [expandedInv, setExpandedInv] = useState(null);
   const [expandedGroup, setExpandedGroup] = useState(null);
+  const [expandedTask, setExpandedTask] = useState(null);
+
+  // --- Inline Portfolio Editing State ---
+  const [editingInv, setEditingInv] = useState(null);
+  const [invForm, setInvForm] = useState({});
 
   // Tab State
-  const [activeTab, setActiveTab] = useState("timeline"); // "timeline" or "portfolio"
+  const [activeTab, setActiveTab] = useState("timeline"); 
   const [taskFilter, setTaskFilter] = useState("All");
 
   // Filter States
@@ -192,12 +197,7 @@ export default function Clients() {
       
       await updateDoc(taskRef, update);
 
-      if (newStatus === "Completed" && fullTaskData && fullTaskData.action === "SIP Cancellation" && fullTaskData.client_code) {
-        console.log(`Processing SIP Cancellation for ${fullTaskData.client_code}...`);
-        
-        const cancelledSchemes = parseTransactionItems(fullTaskData.product_name).map(i => i.productName.toLowerCase().trim());
-        if (cancelledSchemes.length === 0) return;
-
+      if (newStatus === "Completed" && fullTaskData && fullTaskData.client_code) {
         const clientsRef = collection(db, "clients");
         const q = query(clientsRef, where("client_code", "==", fullTaskData.client_code));
         const clientSnapshot = await getDocs(q);
@@ -206,22 +206,41 @@ export default function Clients() {
           const clientDoc = clientSnapshot.docs[0];
           const clientData = clientDoc.data();
           
-          const targetKey = Object.keys(clientData).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips'));
-          
-          if (targetKey && Array.isArray(clientData[targetKey])) {
-            const originalPortfolio = clientData[targetKey];
-            
-            const updatedPortfolio = originalPortfolio.filter(inv => {
-              const invName = (inv.scheme_name || inv.scheme || inv.productName || inv.name || "").toLowerCase().trim();
-              const isCancelled = cancelledSchemes.some(cancelledName => invName.includes(cancelledName) || cancelledName.includes(invName));
-              return !isCancelled;
-            });
+          const targetKey = Object.keys(clientData).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
+          let currentPortfolio = clientData[targetKey] || [];
 
-            if (originalPortfolio.length !== updatedPortfolio.length) {
-              await updateDoc(doc(db, "clients", clientDoc.id), {
-                [targetKey]: updatedPortfolio
+          if (fullTaskData.action === "SIP Cancellation") {
+            const cancelledSchemes = parseTransactionItems(fullTaskData.product_name).map(i => i.productName.toLowerCase().trim());
+            if (cancelledSchemes.length > 0) {
+              const updatedPortfolio = currentPortfolio.filter(inv => {
+                const invName = (inv.scheme_name || inv.scheme || inv.productName || inv.name || "").toLowerCase().trim();
+                const isCancelled = cancelledSchemes.some(cancelledName => invName.includes(cancelledName) || cancelledName.includes(invName));
+                return !isCancelled;
               });
-              console.log(`Successfully removed cancelled SIPs from Client Master: ${fullTaskData.client_code}`);
+
+              if (currentPortfolio.length !== updatedPortfolio.length) {
+                await updateDoc(doc(db, "clients", clientDoc.id), {
+                  [targetKey]: updatedPortfolio
+                });
+              }
+            }
+          } 
+          else if (fullTaskData.action === "SIP Registration") { 
+            const newItems = parseTransactionItems(fullTaskData.product_name).filter(i => i.productName && i.amount);
+            if (newItems.length > 0) {
+              const addedInvestments = newItems.map(item => ({
+                scheme_name: item.productName,
+                installment_amount: item.amount,
+                frequency_type: item.type === "LS" ? "One-time" : "Monthly",
+                folio_number: "Pending Folio",
+                xsip_reg_no: `TEMP-${Math.floor(100000 + Math.random() * 900000)}`,
+                start_date: format(new Date(), "dd-MMM-yyyy"),
+                end_date: "-",
+                type: item.type || "SIP"
+              }));
+              
+              const updatedPortfolio = [...currentPortfolio, ...addedInvestments];
+              await updateDoc(doc(db, "clients", clientDoc.id), { [targetKey]: updatedPortfolio });
             }
           }
         }
@@ -231,10 +250,31 @@ export default function Clients() {
     }
   };
 
+  // --- FIXED: SAVE EDITED PORTFOLIO ITEM USING INDEX ---
+  const handleSaveInvestment = async (e) => {
+    e.preventDefault();
+    try {
+      const targetKey = Object.keys(selected).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
+      const updatedPortfolio = [...(selected[targetKey] || [])];
+      
+      const finalFormToSave = { ...invForm };
+      delete finalFormToSave.originalIndex; // Cleanup before saving to DB
+
+      updatedPortfolio[editingInv] = finalFormToSave;
+      
+      await updateDoc(doc(db, "clients", selected.id), { [targetKey]: updatedPortfolio });
+      setEditingInv(null);
+      setExpandedInv(null);
+    } catch (error) { console.error("Error saving investment:", error); }
+  };
+
   const openEdit = (client) => { setEditClient(client); setShowForm(true); };
   const closeForm = () => { setShowForm(false); setEditClient(null); };
 
-  const groupedInvestments = (selected?.investments || []).reduce((acc, inv) => {
+  // --- FIXED: Map original index so we don't confuse identical xSIP numbers ---
+  const investmentsWithOriginalIndex = (selected?.investments || []).map((inv, idx) => ({ ...inv, originalIndex: idx }));
+
+  const groupedInvestments = investmentsWithOriginalIndex.reduce((acc, inv) => {
     const folio = inv.folio_number && inv.folio_number !== "-" ? inv.folio_number : "Unassigned Folios";
     if (!acc[folio]) acc[folio] = [];
     acc[folio].push(inv);
@@ -250,7 +290,7 @@ export default function Clients() {
         key={c.id}
         onClick={() => { 
           if (isBulkMode) toggleSelection(c.id);
-          else { setSelected(c); setExpandedInv(null); }
+          else { setSelected(c); setExpandedInv(null); setExpandedTask(null); }
         }}
         className={`w-full text-left py-3 flex items-center gap-3 transition-colors ${isSelectedForDeletion ? 'bg-red-500/10' : ''} ${isSubItem ? 'pl-10 pr-4 border-l-2 border-brand-green/40 hover:bg-white/5' : 'px-4 hover:bg-white/5 border-b border-[var(--border)]'}`}
         style={{ background: isActive ? "rgba(0, 130, 84, 0.12)" : isSelectedForDeletion ? "rgba(248, 113, 113, 0.1)" : "transparent" }}
@@ -307,7 +347,6 @@ export default function Clients() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
-        {/* Left: Client List (FIXED SCROLL) */}
         <div className="lg:col-span-1 rounded-2xl flex flex-col sticky top-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)", height: "calc(100vh - 120px)" }}>
           <div className="p-4 flex-shrink-0 z-20 bg-[#0a1612] rounded-t-2xl" style={{ borderBottom: "1px solid var(--border)" }}>
             <div className="flex gap-2 relative">
@@ -325,28 +364,18 @@ export default function Clients() {
               <button 
                 onClick={() => setShowFilters(!showFilters)}
                 className="relative px-3 rounded-xl border flex items-center justify-center transition-all hover:bg-white/5"
-                style={{ 
-                  background: activeFilterCount > 0 ? "rgba(0,130,84,0.15)" : "var(--input-bg)", 
-                  borderColor: activeFilterCount > 0 ? "var(--brand-green)" : "var(--border)",
-                  color: activeFilterCount > 0 ? "var(--brand-green)" : "var(--text-muted)"
-                }}
+                style={{ background: activeFilterCount > 0 ? "rgba(0,130,84,0.15)" : "var(--input-bg)", borderColor: activeFilterCount > 0 ? "var(--brand-green)" : "var(--border)", color: activeFilterCount > 0 ? "var(--brand-green)" : "var(--text-muted)" }}
               >
                 <Filter className="w-4 h-4" />
                 {activeFilterCount > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-brand-green text-white flex items-center justify-center text-[9px] font-bold shadow-sm">
-                    {activeFilterCount}
-                  </span>
+                  <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-brand-green text-white flex items-center justify-center text-[9px] font-bold shadow-sm">{activeFilterCount}</span>
                 )}
               </button>
 
               <button 
                 onClick={toggleBulkMode}
                 className="relative px-3 rounded-xl border flex items-center justify-center transition-all hover:bg-white/5"
-                style={{ 
-                  background: isBulkMode ? "rgba(248,113,113,0.15)" : "var(--input-bg)", 
-                  borderColor: isBulkMode ? "#f87171" : "var(--border)",
-                  color: isBulkMode ? "#f87171" : "var(--text-muted)"
-                }}
+                style={{ background: isBulkMode ? "rgba(248,113,113,0.15)" : "var(--input-bg)", borderColor: isBulkMode ? "#f87171" : "var(--border)", color: isBulkMode ? "#f87171" : "var(--text-muted)" }}
                 title="Select multiple clients to delete"
               >
                 <CheckSquare className="w-4 h-4" />
@@ -414,7 +443,6 @@ export default function Clients() {
             )}
           </div>
           
-          {/* Scrollable list container */}
           <div className="overflow-y-auto flex-1 z-10 custom-scrollbar">
             {loading ? (
               <div className="p-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>Loading...</div>
@@ -461,7 +489,6 @@ export default function Clients() {
           </div>
         </div>
 
-        {/* Right: Client Detail */}
         <div className="lg:col-span-2 space-y-4">
           {!selected ? (
             <div className="rounded-2xl flex items-center justify-center min-h-[400px]" style={{ background: "var(--glass)", border: "1px solid var(--border)" }}>
@@ -476,8 +503,7 @@ export default function Clients() {
               <div className="rounded-2xl p-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)" }}>
                 <div className="flex items-start justify-between mb-5">
                   <div className="flex items-center gap-4">
-                    <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold text-white"
-                      style={{ background: "var(--brand-green)" }}>
+                    <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold text-white" style={{ background: "var(--brand-green)" }}>
                       {selected.client_name?.[0]?.toUpperCase()}
                     </div>
                     <div>
@@ -488,12 +514,10 @@ export default function Clients() {
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <button onClick={() => openEdit(selected)} className="text-xs font-semibold flex items-center gap-1 px-3 py-1.5 rounded-lg transition-all"
-                      style={{ color: "var(--brand-green)", background: "rgba(0,130,84,0.1)", border: "1px solid rgba(0,130,84,0.3)" }}>
+                    <button onClick={() => openEdit(selected)} className="text-xs font-semibold flex items-center gap-1 px-3 py-1.5 rounded-lg transition-all" style={{ color: "var(--brand-green)", background: "rgba(0,130,84,0.1)", border: "1px solid rgba(0,130,84,0.3)" }}>
                       <Pencil className="w-3 h-3" /> Edit
                     </button>
-                    <button onClick={() => handleDelete(selected)} className="text-xs font-semibold flex items-center gap-1 px-3 py-1.5 rounded-lg transition-all"
-                      style={{ color: "#f87171", background: "rgba(220,38,38,0.1)", border: "1px solid rgba(220,38,38,0.2)" }}>
+                    <button onClick={() => handleDelete(selected)} className="text-xs font-semibold flex items-center gap-1 px-3 py-1.5 rounded-lg transition-all" style={{ color: "#f87171", background: "rgba(220,38,38,0.1)", border: "1px solid rgba(220,38,38,0.2)" }}>
                       <Trash2 className="w-3 h-3" /> Delete
                     </button>
                   </div>
@@ -520,19 +544,12 @@ export default function Clients() {
               {/* TABS CONTAINER */}
               <div className="rounded-2xl p-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)", minHeight: "400px" }}>
                 
-                {/* Tab Navigation */}
                 <div className="flex gap-6 border-b border-white/10 mb-6">
-                  <button 
-                    onClick={() => setActiveTab('timeline')} 
-                    className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'timeline' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}
-                  >
+                  <button onClick={() => setActiveTab('timeline')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'timeline' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}>
                     <ListTodo className="w-4 h-4" />
                     Activity Timeline ({clientTasksRaw.length})
                   </button>
-                  <button 
-                    onClick={() => setActiveTab('portfolio')} 
-                    className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'portfolio' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}
-                  >
+                  <button onClick={() => setActiveTab('portfolio')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'portfolio' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}>
                     <Wallet className="w-4 h-4" />
                     Investment Portfolio ({selected.investments?.length || 0})
                   </button>
@@ -542,11 +559,7 @@ export default function Clients() {
                 {activeTab === "timeline" && (
                   <div className="animate-in fade-in duration-200">
                     <div className="flex justify-end mb-4">
-                      <select 
-                        value={taskFilter} 
-                        onChange={(e) => setTaskFilter(e.target.value)}
-                        className="bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none"
-                      >
+                      <select value={taskFilter} onChange={(e) => setTaskFilter(e.target.value)} className="bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none">
                         <option value="All">All Tasks</option>
                         {["Pending","Under Process","Waiting Client","Completed","Cancelled"].map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
@@ -557,9 +570,10 @@ export default function Clients() {
                         <p className="text-sm text-[#889995]">No tasks found matching this filter.</p>
                       </div>
                     ) : (
-                      <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1 custom-scrollbar">
+                      <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
                         {clientTasks.map(t => {
                           const isCompleted = t.status === "Completed";
+                          const isExpanded = expandedTask === t.id;
                           const statusColors = {
                             "Pending":        { bg: "rgba(251,191,36,0.12)",  text: "#fbbf24", border: "rgba(251,191,36,0.25)" },
                             "Under Process":  { bg: "rgba(96,165,250,0.12)",  text: "#60a5fa", border: "rgba(96,165,250,0.25)" },
@@ -570,33 +584,62 @@ export default function Clients() {
                           const sc = statusColors[t.status] || statusColors["Pending"];
 
                           return (
-                            <div key={t.id} className="flex items-start gap-3 p-3 rounded-xl transition-all"
-                              style={{ 
-                                border: isCompleted ? `1px solid ${sc.border}` : "1px solid var(--border)", 
-                                background: isCompleted ? sc.bg : "rgba(255,255,255,0.02)" 
-                              }}>
-                              <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: sc.text }} />
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="font-mono text-xs font-bold" style={{ color: isCompleted ? "#4ade80" : "var(--brand-green)" }}>{t.task_id}</span>
-                                  <span className="text-xs font-medium" style={{ color: "var(--text-main)" }}>{t.action}</span>
-                                  
-                                  <select
-                                    value={t.status}
-                                    onChange={(e) => handleTaskStatusUpdate(t.id, e.target.value, t)} 
-                                    style={{ 
-                                      padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600, 
-                                      background: isCompleted ? "rgba(0,0,0,0.2)" : sc.bg, border: `1px solid ${sc.border}`, color: sc.text, cursor: "pointer" 
-                                    }}
-                                  >
-                                    {["Pending","Under Process","Waiting Client","Completed","Cancelled"].map(s => <option key={s} value={s} style={{background: "#0a1612"}}>{s}</option>)}
-                                  </select>
+                            <div key={t.id} className="flex flex-col gap-2 p-3 rounded-xl transition-all cursor-pointer hover:brightness-110"
+                              style={{ border: isExpanded ? `1px solid ${sc.border}` : "1px solid var(--border)", background: isExpanded ? "rgba(0,0,0,0.4)" : (isCompleted ? sc.bg : "rgba(255,255,255,0.02)")}}
+                              onClick={() => setExpandedTask(isExpanded ? null : t.id)}
+                            >
+                              <div className="flex items-start gap-3">
+                                <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: sc.text }} />
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-mono text-xs font-bold" style={{ color: isCompleted ? "#4ade80" : "var(--brand-green)" }}>{t.task_id}</span>
+                                    <span className="text-xs font-medium" style={{ color: "var(--text-main)" }}>{t.action}</span>
+                                    
+                                    <select
+                                      value={t.status}
+                                      onClick={(e) => e.stopPropagation()} 
+                                      onChange={(e) => handleTaskStatusUpdate(t.id, e.target.value, t)} 
+                                      style={{ padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: isCompleted ? "rgba(0,0,0,0.2)" : sc.bg, border: `1px solid ${sc.border}`, color: sc.text, cursor: "pointer", outline: "none" }}
+                                    >
+                                      {["Pending","Under Process","Waiting Client","Completed","Cancelled"].map(s => <option key={s} value={s} style={{background: "#0a1612"}}>{s}</option>)}
+                                    </select>
+                                  </div>
+                                  <p className="text-xs mt-1" style={{ color: isCompleted ? "rgba(200, 212, 208, 0.7)" : "var(--text-muted)" }}>
+                                    {t.entry_date && format(parseISO(t.entry_date), "dd MMM yyyy")} · {t.assigned_to}
+                                    {t.closure_date && ` · Closed: ${format(parseISO(t.closure_date), "dd MMM yyyy")}`}
+                                  </p>
                                 </div>
-                                <p className="text-xs mt-1" style={{ color: isCompleted ? "rgba(200, 212, 208, 0.7)" : "var(--text-muted)" }}>
-                                  {t.entry_date && format(parseISO(t.entry_date), "dd MMM yyyy")} · {t.assigned_to}
-                                  {t.closure_date && ` · Closed: ${format(parseISO(t.closure_date), "dd MMM yyyy")}`}
-                                </p>
+                                <div className="flex-shrink-0 pt-1">
+                                  {isExpanded ? <ChevronUp className="w-4 h-4 text-[#889995]" /> : <ChevronDown className="w-4 h-4 text-[#889995]" />}
+                                </div>
                               </div>
+
+                              {isExpanded && (
+                                <div className="mt-3 p-4 border-t border-white/5 bg-black/40 rounded-xl animate-in slide-in-from-top-2 cursor-default" onClick={e => e.stopPropagation()}>
+                                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+                                    <div><p className="text-[9px] uppercase font-bold text-[#889995] mb-1">Category</p><p className="text-xs text-white font-medium">{t.category || "—"}</p></div>
+                                    <div><p className="text-[9px] uppercase font-bold text-[#889995] mb-1">Priority</p><p className="text-xs text-white font-medium">{t.priority || "—"}</p></div>
+                                    <div><p className="text-[9px] uppercase font-bold text-[#889995] mb-1">Channel</p><p className="text-xs text-white font-medium">{t.channel || "—"}</p></div>
+                                    <div><p className="text-[9px] uppercase font-bold text-[#889995] mb-1">Total Amount</p><p className="text-xs text-[#4ade80] font-bold">{t.amount ? `₹${t.amount.toLocaleString('en-IN')}` : "—"}</p></div>
+                                  </div>
+
+                                  <div className="mb-4">
+                                    <p className="text-[9px] uppercase font-bold text-[#889995] mb-2 flex items-center gap-1"><Info size={10} /> Products & Transactions</p>
+                                    <div className="flex flex-col gap-2">
+                                      {parseTransactionItems(t.product_name).map((item, idx) => (
+                                        <div key={idx} className="flex items-center gap-3 bg-white/5 px-3 py-2 rounded-lg w-fit border border-white/5">
+                                          <span className="text-xs text-[#c8d4d0]">{item.productName}</span>
+                                          {item.amount && <span className="text-xs font-bold text-[#4ade80]">₹{Number(item.amount).toLocaleString('en-IN')}</span>}
+                                          {t.action === "Lumpsum & SIP" && item.type && (<span className="bg-white/10 px-1.5 py-0.5 rounded text-[9px] font-bold text-white uppercase">{item.type}</span>)}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  {t.notes && (<div className="mb-3"><p className="text-[9px] uppercase font-bold text-[#889995] mb-1">Client Notes</p><p className="text-xs text-[#889995] italic border-l-2 border-[#4ade80]/40 pl-3 py-1">"{t.notes}"</p></div>)}
+                                  {t.reviewer_notes && (<div><p className="text-[9px] uppercase font-bold text-[#889995] mb-1">Internal Reviewer Notes</p><p className="text-xs text-[#f87171] bg-red-500/10 border border-red-500/20 p-2 rounded-lg">"{t.reviewer_notes}"</p></div>)}
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -632,45 +675,75 @@ export default function Clients() {
                             
                             <div className="space-y-3">
                               {invs.map((inv, idx) => {
-                                const isExpanded = expandedInv === inv.xsip_reg_no;
+                                // FIXED: Use originalIndex to perfectly isolate specific items
+                                const isExpanded = expandedInv === inv.originalIndex;
+                                const isEditing = editingInv === inv.originalIndex;
+
                                 return (
                                   <div key={idx} className="rounded-lg overflow-hidden transition-all" style={{ border: isExpanded ? "1px solid var(--brand-green)" : "1px solid rgba(255,255,255,0.05)", background: "rgba(0,0,0,0.2)" }}>
-                                    <div 
-                                      className="p-3 flex items-center justify-between cursor-pointer hover:bg-white/5"
-                                      onClick={() => setExpandedInv(isExpanded ? null : inv.xsip_reg_no)}
-                                    >
+                                    <div className="p-3 flex items-center justify-between cursor-pointer hover:bg-white/5" onClick={() => { if(!isEditing) setExpandedInv(isExpanded ? null : inv.originalIndex) }}>
                                       <div>
                                         <p className="text-sm font-bold text-brand-green">{inv.scheme_name}</p>
                                         <p className="text-[10px] font-mono mt-1 text-[#889995]">xSIP: {inv.xsip_reg_no}</p>
                                       </div>
                                       <div className="flex items-center gap-4">
                                         <div className="text-right">
-                                          <p className="text-sm font-bold text-white">
-                                            {inv.installment_amount !== "-" && !isNaN(inv.installment_amount) ? `₹${Number(inv.installment_amount).toLocaleString('en-IN')}` : inv.installment_amount}
-                                          </p>
+                                          <p className="text-sm font-bold text-white">{inv.installment_amount !== "-" && !isNaN(inv.installment_amount) ? `₹${Number(inv.installment_amount).toLocaleString('en-IN')}` : inv.installment_amount}</p>
                                           <p className="text-[9px] uppercase tracking-wider text-[#889995] mt-0.5">{inv.frequency_type}</p>
                                         </div>
-                                        {isExpanded ? <ChevronUp className="w-4 h-4 text-white/50" /> : <ChevronDown className="w-4 h-4 text-white/50" />}
+                                        {!isEditing && (isExpanded ? <ChevronUp className="w-4 h-4 text-white/50" /> : <ChevronDown className="w-4 h-4 text-white/50" />)}
                                       </div>
                                     </div>
 
                                     {isExpanded && (
-                                      <div className="p-3 border-t border-white/5 bg-black/40 grid grid-cols-2 gap-4 animate-in slide-in-from-top-2">
-                                        <div className="flex items-center gap-2">
-                                          <Calendar className="w-3 h-3 text-brand-green" />
-                                          <div>
-                                            <p className="text-[8px] uppercase tracking-wider text-[#889995]">Start Date</p>
-                                            <p className="text-[10px] text-white">{inv.start_date}</p>
+                                      isEditing ? (
+                                        <div className="p-4 border-t border-white/5 bg-black/60 animate-in slide-in-from-top-2">
+                                          <form onSubmit={handleSaveInvestment} className="flex flex-col gap-3">
+                                            <div className="grid grid-cols-2 gap-3">
+                                              <div>
+                                                <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">Folio Number</label>
+                                                <input value={invForm.folio_number || ""} onChange={e => setInvForm({...invForm, folio_number: e.target.value})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-brand-green" />
+                                              </div>
+                                              <div>
+                                                <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">xSIP Reg No</label>
+                                                <input value={invForm.xsip_reg_no || ""} onChange={e => setInvForm({...invForm, xsip_reg_no: e.target.value})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-brand-green" />
+                                              </div>
+                                              <div className="col-span-2">
+                                                <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">Scheme Name</label>
+                                                <input value={invForm.scheme_name || ""} onChange={e => setInvForm({...invForm, scheme_name: e.target.value})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-brand-green" />
+                                              </div>
+                                              <div>
+                                                <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">Amount (₹)</label>
+                                                <input type="number" value={invForm.installment_amount || ""} onChange={e => setInvForm({...invForm, installment_amount: e.target.value})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-brand-green" />
+                                              </div>
+                                            </div>
+                                            <div className="flex gap-2 justify-end mt-2">
+                                              <button type="button" onClick={() => setEditingInv(null)} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-white/5 text-[#889995] hover:bg-white/10 transition-colors">Cancel</button>
+                                              <button type="submit" className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#008254] text-white hover:bg-[#008254]/80 transition-colors">Save Details</button>
+                                            </div>
+                                          </form>
+                                        </div>
+                                      ) : (
+                                        <div className="p-3 border-t border-white/5 bg-black/40 grid grid-cols-2 gap-4 animate-in slide-in-from-top-2 relative">
+                                          <button onClick={() => { setEditingInv(inv.originalIndex); setInvForm(inv); }} className="absolute top-3 right-3 text-[#60a5fa] bg-blue-500/10 p-1.5 rounded-md border border-blue-500/20 hover:bg-blue-500/20 transition-colors">
+                                            <Pencil size={12} />
+                                          </button>
+                                          <div className="flex items-center gap-2">
+                                            <Calendar className="w-3 h-3 text-brand-green" />
+                                            <div>
+                                              <p className="text-[8px] uppercase tracking-wider text-[#889995]">Start Date</p>
+                                              <p className="text-[10px] text-white">{inv.start_date}</p>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <Calendar className="w-3 h-3 text-[#f87171]" />
+                                            <div>
+                                              <p className="text-[8px] uppercase tracking-wider text-[#889995]">End Date</p>
+                                              <p className="text-[10px] text-white">{inv.end_date}</p>
+                                            </div>
                                           </div>
                                         </div>
-                                        <div className="flex items-center gap-2">
-                                          <Calendar className="w-3 h-3 text-[#f87171]" />
-                                          <div>
-                                            <p className="text-[8px] uppercase tracking-wider text-[#889995]">End Date</p>
-                                            <p className="text-[10px] text-white">{inv.end_date}</p>
-                                          </div>
-                                        </div>
-                                      </div>
+                                      )
                                     )}
                                   </div>
                                 )
