@@ -2,43 +2,60 @@ import { db, auth } from "./firebase";
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { createPageUrl } from "@/utils";
+import { format } from "date-fns"; // <-- THIS WAS MISSING!
 
 import {
   LayoutDashboard, Plus, Users, ListChecks, BarChart3, Calendar,
-  Menu, X, LogOut, ArrowLeft, TrendingUp
+  Menu, X, LogOut, ArrowLeft, TrendingUp, TrendingDown, Activity, CheckCircle2, ClipboardCheck,
+  Goal
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { collection, query, onSnapshot, where } from "firebase/firestore";
 
 const navGroups = [
   {
-    label: null,
-    items: [{ label: "Dashboard", icon: LayoutDashboard, page: "Dashboard" }],
+    label: "Overview",
+    items: [{ label: "Dashboard", icon: LayoutDashboard, page: "Dashboard" },
+        { label: "Calendar", icon: Calendar, page: "CalendarView" }
+    ],
   },
   {
-    label: "Business Development",
-    items: [{ label: "Lead Clients", icon: Users, page: "LeadClients" }],
+    label: "Client Management",
+    items: [{ label: "Lead Clients", icon: Users, page: "LeadClients" },
+              { label: "Clients", icon: Users, page: "Clients" }
+    ],
   },
   {
-    label: "Task Manager",
+    label: "Workflow & Tasks",
     items: [
-      { label: "New Task", icon: Plus, page: "NewTask" },
       { label: "Live Tasks", icon: ListChecks, page: "LiveTasks" },
+      { label: "New Task", icon: Plus, page: "NewTask" }
+      
     ],
   },
   {
-    label: "Records",
+    label: "Financial Planning",
     items: [
-      { label: "Clients", icon: Users, page: "Clients" },
-      { label: "Reports", icon: BarChart3, page: "Reports" },
-      { label: "Investment Analytics", icon: TrendingUp, page: "InvestmentReport" },
-      { label: "Calendar", icon: Calendar, page: "CalendarView" },
+      { label: "Goal Tracker", icon: Goal, page: "LiveTasks" },
+      { label: "Client Review", icon: ClipboardCheck, page: "ClientReview" },
     ],
   },
+   {
+    label: "Data & Analytics",
+    items: [
+      { label: "Investment Analytics", icon: TrendingUp, page: "InvestmentReport" },
+      { label: "Reports", icon: BarChart3, page: "Reports" }
+    ],
+  }
 ];
 
 export default function Layout({ children, currentPageName }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [user, setUser] = useState(null);
+  
+  // --- STATE ---
+  const [marketData, setMarketData] = useState({ nifty: null, sensex: null, loading: true, error: false });
+  const [todayTaskCount, setTodayTaskCount] = useState(0);
 
   useEffect(() => {
     setUser({
@@ -48,8 +65,83 @@ export default function Layout({ children, currentPageName }) {
     });
   }, []);
 
+  // --- SMART READ OPTIMIZATION: Fetch ONLY tasks due exactly today ---
+  useEffect(() => {
+    const todayStr = format(new Date(), "yyyy-MM-dd"); // This is where it crashed before!
+    const qTasks = query(collection(db, "tasks"), where("follow_up_date", "==", todayStr));
+
+    const unsubscribe = onSnapshot(qTasks, (snapshot) => {
+      const activeTodayTasks = snapshot.docs
+        .map(doc => doc.data())
+        .filter(t => !["Completed", "Cancelled"].includes(t.status));
+      
+      setTodayTaskCount(activeTodayTasks.length);
+    }, (error) => {
+      console.error("Error fetching today's tasks:", error);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // --- 0 FIREBASE READS: Fetch from Yahoo Finance ---
+  useEffect(() => {
+    const fetchMarket = async () => {
+      setMarketData(prev => ({ ...prev, loading: true, error: false }));
+      try {
+        const fetchIndex = async (symbol) => {
+          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`;
+          const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+          
+          const res = await fetch(proxyUrl);
+          if (!res.ok) throw new Error("Network response was not ok");
+          const data = await res.json();
+          const meta = data.chart.result[0].meta;
+          
+          const price = meta.regularMarketPrice;
+          const prevClose = meta.previousClose;
+          const change = price - prevClose;
+          const percent = (change / prevClose) * 100;
+          
+          return { price, change, percent };
+        };
+
+        const [nifty, sensex] = await Promise.all([
+          fetchIndex('^NSEI'),
+          fetchIndex('^BSESN')
+        ]);
+
+        setMarketData({ nifty, sensex, loading: false, error: false });
+      } catch (error) {
+        console.error("Failed to fetch market data", error);
+        setMarketData(prev => ({ ...prev, loading: false, error: true })); 
+      }
+    };
+
+    fetchMarket();
+    const interval = setInterval(fetchMarket, 300000); // 5 mins
+    return () => clearInterval(interval);
+  }, []);
+
+  const renderMarketPill = (name, data) => {
+    if (!data) return null;
+    const isUp = data.change >= 0;
+    const ColorClass = isUp ? "text-[#4ade80]" : "text-[#f87171]";
+    const BgClass = isUp ? "bg-[#4ade80]/10 border-[#4ade80]/20" : "bg-[#f87171]/10 border-[#f87171]/20";
+    const Icon = isUp ? TrendingUp : TrendingDown;
+
+    return (
+      <div className={`flex items-center gap-3 px-3 py-1.5 rounded-xl border ${BgClass}`}>
+        <span className="text-[10px] font-bold text-[#889995] uppercase tracking-wider">{name}</span>
+        <span className="text-sm font-black text-white">{data.price.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</span>
+        <div className={`flex items-center gap-1 ${ColorClass}`}>
+          <Icon className="w-3 h-3" />
+          <span className="text-[10px] font-bold">{Math.abs(data.percent).toFixed(2)}%</span>
+        </div>
+      </div>
+    );
+  };
+
   return (
-    // FIX: Changed min-h-screen to h-screen and added overflow-hidden
     <div className="h-screen flex overflow-hidden" style={{ background: "var(--bg-black)", color: "var(--text-main)" }}>
       <style>{`
         :root {
@@ -68,39 +160,38 @@ export default function Layout({ children, currentPageName }) {
           background-color: var(--bg-black) !important; 
           color: var(--text-main) !important; 
           margin: 0; 
-          overflow: hidden; /* Prevents body-level scrolling */
+          overflow: hidden;
         }
         input, select, textarea { background: var(--input-bg) !important; border-color: var(--border) !important; color: var(--text-main) !important; }
         input::placeholder, textarea::placeholder { color: var(--text-muted) !important; }
         input:focus, select:focus, textarea:focus { border-color: var(--brand-green) !important; outline: none !important; }
+        
+        .custom-scrollbar { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
       `}</style>
 
       {/* Sidebar */}
       <aside className={cn(
         "fixed inset-y-0 left-0 z-50 w-64 flex flex-col transition-transform duration-300",
         sidebarOpen ? "translate-x-0" : "-translate-x-full",
-        // FIX: Added lg:h-full and flex-shrink-0 to keep sidebar size constant
         "lg:translate-x-0 lg:static lg:flex lg:h-full flex-shrink-0"
       )} style={{ background: "#040d0a", borderRight: "1px solid var(--border)" }}>
         
-        {/* Logo */}
-        <div className="px-6 py-5 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div className="h-20 px-6 flex items-center flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
           <div className="flex items-center gap-3">
-            <img
-              src="/logo.png"
-              alt="FideloWealth"
-              className="w-9 h-9 rounded-xl object-cover"
-            />
+            <img src="/logo.png" alt="FideloWealth" className="w-9 h-9 rounded-xl object-cover" />
             <div>
-              <p className="font-semibold text-sm" style={{ color: "var(--text-main)" }}>FideloOps</p>
+              <p className="font-semibold text-sm leading-tight" style={{ color: "var(--text-main)" }}>FideloOps</p>
               <p className="text-xs" style={{ color: "var(--text-muted)" }}>Client Service Hub</p>
             </div>
           </div>
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-          {/* Go Back Button */}
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto custom-scrollbar">
           <div className="mb-6 px-1">
             <a 
               href="https://adi4real.github.io/Fidelo_Main/"
@@ -169,8 +260,9 @@ export default function Layout({ children, currentPageName }) {
 
       {/* Main Area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Top bar */}
-        <header className="h-14 flex-shrink-0 flex items-center px-4 gap-4 sticky top-0 z-30" style={{ background: "#040d0a", borderBottom: "1px solid var(--border)" }}>
+        
+        {/* TOP BAR */}
+        <header className="h-20 flex-shrink-0 flex items-center px-8 gap-4 sticky top-0 z-30" style={{ background: "#040d0a", borderBottom: "1px solid var(--border)" }}>
           <button
             className="lg:hidden"
             style={{ color: "var(--text-muted)" }}
@@ -178,17 +270,54 @@ export default function Layout({ children, currentPageName }) {
           >
             <Menu className="w-5 h-5" />
           </button>
-          <div className="flex-1" />
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-green-400" />
-            <span className="text-xs hidden sm:block" style={{ color: "var(--text-muted)" }}>
-              {new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short", year: "numeric" })}
-            </span>
+          
+          {/* LIVE MARKET TICKER SECTION */}
+          <div className="flex-1 flex items-center justify-start gap-4 overflow-x-auto custom-scrollbar pr-4">
+            {marketData.loading ? (
+              <div className="text-xs font-bold text-[#889995] animate-pulse flex items-center gap-2">
+                <Activity className="w-4 h-4 text-[#4ade80]" /> Fetching Live Markets...
+              </div>
+            ) : marketData.error ? (
+               <div className="text-xs font-bold text-[#f87171] opacity-60 flex items-center gap-2">
+                 Market Data Offline
+               </div>
+            ) : (
+              <>
+                {renderMarketPill("NIFTY 50", marketData.nifty)}
+                {renderMarketPill("SENSEX", marketData.sensex)}
+              </>
+            )}
+          </div>
+          
+          {/* RIGHT SIDE: BADGE + DATE */}
+          <div className="flex items-center gap-4 flex-shrink-0">
+            {todayTaskCount > 0 ? (
+              <Link 
+                to={createPageUrl("LiveTasks")} 
+                className="flex items-center gap-2 px-3 py-1.5 rounded-xl transition-colors hover:brightness-110"
+                style={{ background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.2)", color: "#fbbf24", textDecoration: "none" }}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-[#fbbf24] animate-pulse" />
+                <span className="text-[11px] font-bold uppercase tracking-wider">{todayTaskCount} Due Today</span>
+              </Link>
+            ) : (
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl" style={{ background: "rgba(74,222,128,0.1)", border: "1px solid rgba(74,222,128,0.2)", color: "#4ade80" }}>
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span className="text-[11px] font-bold uppercase tracking-wider">All Clear</span>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 border-l border-white/10 pl-4 ml-1">
+              <div className="w-2 h-2 rounded-full bg-green-400" />
+              <span className="text-xs font-medium hidden sm:block tracking-wide" style={{ color: "var(--text-muted)" }}>
+                {new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short", year: "numeric" })}
+              </span>
+            </div>
           </div>
         </header>
 
-        {/* Page content - This is the only part that will scroll */}
-        <main className="flex-1 overflow-y-auto">
+        {/* Page content */}
+        <main className="flex-1 overflow-y-auto custom-scrollbar">
           {children}
         </main>
       </div>

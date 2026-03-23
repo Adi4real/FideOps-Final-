@@ -120,13 +120,16 @@ const CATEGORY_ACTIONS = {
   ],
   "Service": ["Account Statement", "Capital Gains Statement", "Nomination Update", "Bank Mandate", "Other"],
   "KYC": ["KYC Update", "KYC Verification", "KYC Modification", "Physical KYC", "eKYC"],
-  "Portfolio Review": ["SIP Switch", "SIP Stop", "SIP Top-up", "SIP Restart", "SIP Pause", "Scheme Switch", "Scheme Redemption", "Scheme Re-investment"],
+  "Portfolio Review": ["SIP Top-up", "SIP Restart", "SIP Pause", "Scheme Switch", "Scheme Redemption", "Scheme Re-investment"],
   "Term": ["New Policy Purchase", "Policy Renewal", "Policy Servicing", "Policy Surrender", "Policy Claim Assistance", "Policy Revival", "Policy Nominee Update", "Policy Detail Update / Correction"],
   "Health": ["New Policy Purchase", "Policy Renewal", "Policy Servicing", "Policy Surrender", "Policy Claim Assistance", "Policy Revival", "Policy Nominee Update", "Policy Detail Update / Correction"],
 };
 
 const CHANNELS = ["Call", "WhatsApp", "Email", "Meeting"];
 const PRIORITIES = ["High", "Medium", "Low"];
+
+// ACTIONS THAT BEHAVE LIKE SIP REGISTRATION
+const SIP_ADD_ACTIONS = ["SIP Registration", "SIP Top-up", "SIP Restart"];
 
 function getFinancialYear() {
   const now = new Date();
@@ -200,8 +203,7 @@ export default function NewTask() {
 
   // --- SMART AUTO-POPULATE TRIGGER ---
   useEffect(() => {
-    const isTargetAction = form.category === "Transaction" && 
-                           (form.action === "SIP Registration" || form.action === "SIP Cancellation");
+    const isTargetAction = SIP_ADD_ACTIONS.includes(form.action) || form.action === "SIP Cancellation";
 
     if (form.client_code && isTargetAction) {
       const clientData = clients.find(c => c.client_code === form.client_code);
@@ -222,8 +224,8 @@ export default function NewTask() {
         if (parsedItems.length === 0) {
           setTransactionItems([{ productName: "", amount: "", type: "SIP", isEditable: true, isExisting: false, selected: false }]);
         } else {
-          // If SIP Registration: Show existing + one empty row for new
-          if (form.action === "SIP Registration") {
+          // If Registration/Top-up/Restart: Show existing + one empty row for new
+          if (SIP_ADD_ACTIONS.includes(form.action)) {
             setTransactionItems([...parsedItems, { productName: "", amount: "", type: "SIP", isEditable: true, isExisting: false, selected: false }]);
           } else {
             // If SIP Cancellation: Just show the existing items so they can be selected
@@ -294,7 +296,7 @@ export default function NewTask() {
   // Only calculate total for the items that will actually be submitted
   const activeItemsForTotal = form.action === "SIP Cancellation" 
       ? transactionItems.filter(i => i.selected) 
-      : form.action === "SIP Registration"
+      : SIP_ADD_ACTIONS.includes(form.action)
       ? transactionItems.filter(i => !i.isExisting)
       : transactionItems;
 
@@ -303,7 +305,7 @@ export default function NewTask() {
     return sum + (isNaN(val) ? 0 : val);
   }, 0);
 
-  const getAmountLabel = () => (form.category === "Transaction" && form.action) ? `${form.action} Amount (₹)` : "Total Amount (₹)";
+  const getAmountLabel = () => (form.action) ? `${form.action} Amount (₹)` : "Total Amount (₹)";
 
   const triggerWhatsApp = async (taskData) => {
     const phone = getRecipientPhone(taskData.assigned_to);
@@ -320,6 +322,8 @@ export default function NewTask() {
     } catch (e) { console.error(e); }
   };
 
+  const isTransactionUI = form.category === "Transaction" || SIP_ADD_ACTIONS.includes(form.action);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
@@ -328,12 +332,12 @@ export default function NewTask() {
     let finalProductString = "";
     let finalAmount = null;
 
-    if (form.category === "Transaction") {
+    if (isTransactionUI) {
       // Determine what actually gets submitted to the task
       let itemsToSubmit = [];
       if (form.action === "SIP Cancellation") {
         itemsToSubmit = transactionItems.filter(i => i.selected);
-      } else if (form.action === "SIP Registration") {
+      } else if (SIP_ADD_ACTIONS.includes(form.action)) {
         itemsToSubmit = transactionItems.filter(i => !i.isExisting);
       } else {
         itemsToSubmit = transactionItems;
@@ -386,14 +390,13 @@ export default function NewTask() {
         /* --- CALENDAR ICON FIX (YELLOW) --- */
         input[type="date"]::-webkit-calendar-picker-indicator,
         input[type="month"]::-webkit-calendar-picker-indicator {
-          /* Translates the black native icon to yellow (#fbbf24) */
           filter: invert(83%) sepia(51%) saturate(1149%) hue-rotate(339deg) brightness(101%) contrast(105%);
           cursor: pointer;
           opacity: 1;
         }
         input[type="date"], input[type="month"] {
           color-scheme: dark;
-          color: #fbbf24 !important; /* Makes the date text yellow */
+          color: #fbbf24 !important; 
           font-weight: 700;
         }
       `}</style>
@@ -450,7 +453,7 @@ export default function NewTask() {
                   </select>
                 </div>
 
-                {form.category === "Transaction" ? (
+                {isTransactionUI ? (
                   <div style={{ gridColumn: "1 / -1" }}>
                     <label style={labelStyle}>{form.action ? `${form.action} Details *` : "Investment Details *"}</label>
                     <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -493,9 +496,9 @@ export default function NewTask() {
                           )}
                         </>
                       ) : (
-                        // --- SIP REGISTRATION & NORMAL UI ---
+                        // --- SIP REGISTRATION/TOP-UP/RESTART & NORMAL UI ---
                         transactionItems.map((item, idx) => {
-                          if (form.action === "SIP Registration" && item.isExisting) {
+                          if (SIP_ADD_ACTIONS.includes(form.action) && item.isExisting) {
                             return (
                               <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", background: "rgba(255,255,255,0.02)", borderRadius: "12px", border: "1px dashed rgba(255,255,255,0.15)" }}>
                                 <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
@@ -609,14 +612,14 @@ export default function NewTask() {
                         onClick={addTransactionItem}
                         style={{ display: "flex", alignItems: "center", gap: "6px", background: "transparent", color: "#4ade80", border: "none", fontSize: "12px", fontWeight: 700, cursor: "pointer", marginTop: "12px", padding: 0 }}
                       >
-                        <Plus size={14} /> {form.action === "SIP Registration" ? "Add New SIP" : "Add Another Investment"}
+                        <Plus size={14} /> {SIP_ADD_ACTIONS.includes(form.action) ? "Add New SIP" : "Add Another Investment"}
                       </button>
                     )}
 
                     {totalTransactionAmount > 0 && (
                       <div style={{ marginTop: "16px", padding: "12px", background: form.action === "SIP Cancellation" ? "rgba(248,113,113,0.1)" : "rgba(0,130,84,0.1)", border: form.action === "SIP Cancellation" ? "1px solid rgba(248,113,113,0.2)" : "1px solid rgba(0,130,84,0.2)", borderRadius: "10px" }}>
                         <p style={{ fontSize: 11, color: "#889995", textTransform: "uppercase", fontWeight: 700, marginBottom: 2 }}>
-                          {form.action === "SIP Registration" ? "New SIP Total" : form.action === "SIP Cancellation" ? "Total Value to Cancel" : "Grand Total"}
+                          {SIP_ADD_ACTIONS.includes(form.action) ? "New SIP Total" : form.action === "SIP Cancellation" ? "Total Value to Cancel" : "Grand Total"}
                         </p>
                         <p style={{ fontSize: 16, color: form.action === "SIP Cancellation" ? "#f87171" : "white", fontWeight: 700 }}>₹{totalTransactionAmount.toLocaleString('en-IN')}</p>
                         <p style={{ fontSize: 11, color: form.action === "SIP Cancellation" ? "#f87171" : "#4ade80", marginTop: 4, fontWeight: 600, fontStyle: "italic" }}>

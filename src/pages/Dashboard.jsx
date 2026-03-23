@@ -13,7 +13,7 @@ import { format, isToday, isPast, parseISO, startOfMonth, subMonths } from "date
 
 // Firebase Imports
 import { db } from "../firebase"; 
-import { collection, query, onSnapshot } from "firebase/firestore";
+import { collection, query, onSnapshot, where } from "firebase/firestore";
 
 const COLORS = ["#008254", "#4ade80", "#60a5fa", "#fbbf24", "#f87171"];
 
@@ -28,24 +28,34 @@ export default function Dashboard() {
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Real-time synchronization for Tasks and Leads
+  // --- READ OPTIMIZATION: Only fetch the last 6 months of data ---
   useEffect(() => {
+    const sixMonthsAgo = format(subMonths(new Date(), 5), "yyyy-MM-01");
+    
     const tasksRef = collection(db, "tasks");
     const leadsRef = collection(db, "leads");
 
-    const unsubTasks = onSnapshot(tasksRef, (snap) => {
+    // Bound tasks to last 6 months to drastically reduce reads
+    const qTasks = query(tasksRef, where("entry_date", ">=", sixMonthsAgo));
+    // Bound leads to last 6 months
+    const qLeads = query(leadsRef, where("created_at", ">=", new Date(sixMonthsAgo)));
+
+    const unsubTasks = onSnapshot(qTasks, (snap) => {
       setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
-    const unsubLeads = onSnapshot(leadsRef, (snap) => {
+    const unsubLeads = onSnapshot(qLeads, (snap) => {
       setLeads(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    }, (err) => {
+      // Fallback if index isn't built yet, though usually dates work fine
+      console.warn("Leads index missing, fetching active only.", err);
       setLoading(false);
     });
 
     return () => { unsubTasks(); unsubLeads(); };
   }, []);
 
-  // Compute live KPIs from Firestore data
   const active = tasks.filter(t => !["Completed", "Cancelled"].includes(t.status));
   const completed = tasks.filter(t => t.status === "Completed");
   const overdue = active.filter(t => t.follow_up_date && isPast(parseISO(t.follow_up_date)) && !isToday(parseISO(t.follow_up_date)));
@@ -78,7 +88,7 @@ export default function Dashboard() {
   const cardBase = { background: "var(--glass)", border: "1px solid var(--border)", borderRadius: 16, backdropFilter: "blur(10px)" };
 
   const stats = [
-    { label: "Total Tasks", value: tasks.length, icon: TrendingUp, color: "#008254" },
+    { label: "Tasks (Last 6M)", value: tasks.length, icon: TrendingUp, color: "#008254" },
     { label: "Completed", value: completed.length, icon: CheckCircle2, color: "#4ade80" },
     { label: "Active Tasks", value: active.length, icon: Clock, color: "#60a5fa" },
     { label: "Overdue", value: overdue.length, icon: AlertTriangle, color: "#f87171" },
@@ -100,7 +110,7 @@ export default function Dashboard() {
     <div className="p-4 lg:p-8 space-y-8" style={{ background: "var(--bg-black)", minHeight: "100vh" }}>
       <div>
         <h1 className="text-2xl font-bold" style={{ color: "#c8d4d0" }}>Dashboard</h1>
-        <p className="text-sm mt-1" style={{ color: "#889995" }}>Overview of all operations</p>
+        <p className="text-sm mt-1" style={{ color: "#889995" }}>Overview of operations (Last 6 Months)</p>
       </div>
 
       {/* BD Stats */}

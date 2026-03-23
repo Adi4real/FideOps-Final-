@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, X, Star, Calendar as CalendarIcon } from "lu
 
 // Firebase Imports
 import { db } from "../firebase"; 
-import { collection, query, onSnapshot, orderBy } from "firebase/firestore";
+import { collection, query, onSnapshot, where } from "firebase/firestore";
 
 const STATUS_COLOR = {
   "Pending":         "#fbbf24",
@@ -53,21 +53,38 @@ export default function CalendarView() {
   const [current, setCurrent] = useState(new Date());
   const [selected, setSelected] = useState(null);
   const [selectedDayData, setSelectedDayData] = useState({ dayTasks: [], holiday: null });
-  const [expandedTaskId, setExpandedTaskId] = useState(null); // Expansion state
+  const [expandedTaskId, setExpandedTaskId] = useState(null); 
 
+  // --- READ OPTIMIZATION: Fetch tasks based on the current calendar view window ---
   useEffect(() => {
+    setLoading(true);
+    
+    // Create a 3-month window around the currently viewed month (Previous, Current, Next)
+    // This allows the calendar to render trailing/leading days without loading 10 years of data.
+    const windowStart = format(subMonths(current, 1), "yyyy-MM-01");
+    const windowEnd = format(addMonths(current, 2), "yyyy-MM-01");
+
     const tasksRef = collection(db, "tasks");
-    const q = query(tasksRef, orderBy("follow_up_date", "desc"));
+    
+    // We only need Active tasks for the calendar view (you don't usually track completed tasks in a calendar planner)
+    const q = query(
+      tasksRef, 
+      where("status", "in", ["Pending", "Under Process", "Waiting Client"]),
+      where("follow_up_date", ">=", windowStart),
+      where("follow_up_date", "<=", windowEnd)
+    );
+
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const taskData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setTasks(taskData);
       setLoading(false);
     }, (error) => {
-      console.error("Error fetching tasks:", error);
+      console.error("Error fetching tasks for calendar:", error);
       setLoading(false);
     });
+
     return () => unsubscribe();
-  }, []);
+  }, [current]); // Refetch if the user navigates to a drastically different month
 
   const allRMs = [...new Set(tasks.map(t => t.assigned_to).filter(Boolean))];
   const rmColorMap = {};
@@ -81,7 +98,7 @@ export default function CalendarView() {
 
   const openDay = (date) => {
     setSelected(date);
-    setExpandedTaskId(null); // Reset expansion when opening new day
+    setExpandedTaskId(null); 
     setSelectedDayData(getDayData(tasks, date));
   };
 

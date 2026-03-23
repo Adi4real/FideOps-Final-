@@ -7,7 +7,7 @@ import {
 
 // Firebase Imports
 import { db } from "../firebase"; 
-import { collection, query, onSnapshot, orderBy } from "firebase/firestore";
+import { collection, query, onSnapshot, orderBy, where } from "firebase/firestore";
 
 const COLORS = ["#008254", "#4ade80", "#60a5fa", "#fbbf24", "#f87171", "#a78bfa"];
 
@@ -23,10 +23,16 @@ export default function Reports() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Real-time synchronization for Reports data
+  // --- READ OPTIMIZATION: Only fetch the last 6 months of data ---
   useEffect(() => {
+    const sixMonthsAgo = format(subMonths(new Date(), 5), "yyyy-MM-01");
     const tasksRef = collection(db, "tasks");
-    const q = query(tasksRef, orderBy("entry_date", "desc"));
+    
+    const q = query(
+      tasksRef, 
+      where("entry_date", ">=", sixMonthsAgo),
+      orderBy("entry_date", "desc")
+    );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const taskData = snapshot.docs.map(doc => ({
@@ -71,10 +77,6 @@ export default function Reports() {
   tasks.forEach(t => { if (t.category) byCat[t.category] = (byCat[t.category] || 0) + 1; });
   const catData = Object.entries(byCat).map(([name, value]) => ({ name, value }));
 
-  const byStatus = {};
-  tasks.forEach(t => { byStatus[t.status] = (byStatus[t.status] || 0) + 1; });
-  const statusData = Object.entries(byStatus).map(([name, value]) => ({ name, value }));
-
   if (loading) return (
     <div style={{ background: "#050a09", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#889995" }}>
       Loading reports...
@@ -82,7 +84,7 @@ export default function Reports() {
   );
 
   const kpis = [
-    { label: "Total Tasks", value: tasks.length, color: "#c8d4d0" },
+    { label: "Tasks (Last 6M)", value: tasks.length, color: "#c8d4d0" },
     { label: "Completed", value: closedTasks.length, color: "#4ade80" },
     { label: "Avg Closure Time", value: `${avgClosure} days`, color: "#60a5fa" },
     { label: "Active Tasks", value: tasks.filter(t => !["Completed", "Cancelled"].includes(t.status)).length, color: "#fbbf24" },
@@ -93,7 +95,7 @@ export default function Reports() {
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
         <div style={{ marginBottom: 28 }}>
           <h1 style={{ fontSize: 24, fontWeight: 800, color: "#c8d4d0" }}>Reports & Analytics</h1>
-          <p style={{ fontSize: 13, color: "#889995", marginTop: 4 }}>Performance overview across all tasks</p>
+          <p style={{ fontSize: 13, color: "#889995", marginTop: 4 }}>Performance overview (Last 6 Months)</p>
         </div>
 
         {/* KPIs */}
