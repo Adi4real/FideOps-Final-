@@ -276,6 +276,17 @@ export default function InvestmentReport() {
       <style>{`
         input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         input[type="number"] { -moz-appearance: textfield; }
+        
+        /* --- CALENDAR ICON FIX --- */
+        input[type="date"]::-webkit-calendar-picker-indicator,
+        input[type="month"]::-webkit-calendar-picker-indicator {
+          filter: invert(1);
+          opacity: 0.7;
+          cursor: pointer;
+        }
+        input[type="date"], input[type="month"] {
+          color-scheme: dark;
+        }
       `}</style>
 
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
