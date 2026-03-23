@@ -383,15 +383,18 @@ export default function NewTask() {
         input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         input[type="number"] { -moz-appearance: textfield; }
         
-        /* --- CALENDAR ICON FIX --- */
+        /* --- CALENDAR ICON FIX (YELLOW) --- */
         input[type="date"]::-webkit-calendar-picker-indicator,
         input[type="month"]::-webkit-calendar-picker-indicator {
-          filter: invert(1);
-          opacity: 0.7;
+          /* Translates the black native icon to yellow (#fbbf24) */
+          filter: invert(83%) sepia(51%) saturate(1149%) hue-rotate(339deg) brightness(101%) contrast(105%);
           cursor: pointer;
+          opacity: 1;
         }
         input[type="date"], input[type="month"] {
           color-scheme: dark;
+          color: #fbbf24 !important; /* Makes the date text yellow */
+          font-weight: 700;
         }
       `}</style>
 
