@@ -82,7 +82,7 @@ export default function ClientReview() {
         setPlanDraft(updated.review_plan || emptyPlan);
       }
     }
-  }, [clients]);
+  }, [clients, selected]);
 
   const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
 
@@ -102,7 +102,10 @@ export default function ClientReview() {
         const endOfCurrentMonth = endOfMonth(new Date());
         matchesStatus = isBefore(reviewDate, endOfCurrentMonth) || isSameMonth(reviewDate, endOfCurrentMonth);
       }
+    } else if (filters.status === "unscheduled") {
+      matchesStatus = !c.next_review_date;
     }
+    
     return matchesSearch && matchesRm && matchesCycle && matchesStatus;
   });
 
@@ -250,39 +253,49 @@ export default function ClientReview() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Left Sidebar (List & Filters) */}
         <div className="lg:col-span-1 rounded-2xl flex flex-col sticky top-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)", height: "calc(100vh - 120px)" }}>
-          <div className="p-4 flex-shrink-0 z-20 bg-[#0a1612] rounded-t-2xl" style={{ borderBottom: "1px solid var(--border)" }}>
-            <div className="flex gap-2 relative">
+          <div className="p-5 flex-shrink-0 z-20 bg-[#0a1612] rounded-t-2xl" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div className="flex gap-3 relative">
               <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#889995]" />
-                <input className="w-full pl-9 pr-3 py-2 rounded-xl text-sm bg-[#050a09] border border-white/10 text-white focus:border-[#4ade80] outline-none" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#889995]" />
+                <input 
+                  className="w-full pl-12 pr-4 py-3.5 rounded-xl text-base bg-[#050a09] border border-white/10 text-white focus:border-[#4ade80] outline-none shadow-inner transition-all placeholder-[#889995]" 
+                  placeholder="Search clients..." 
+                  value={search} 
+                  onChange={e => setSearch(e.target.value)} 
+                />
               </div>
-              <button onClick={() => setShowFilters(!showFilters)} className="px-3 rounded-xl border flex items-center justify-center transition-all hover:bg-white/5 relative" style={{ background: activeFilterCount > 0 ? "rgba(0,130,84,0.15)" : "#050a09", borderColor: activeFilterCount > 0 ? "#008254" : "var(--border)", color: activeFilterCount > 0 ? "#4ade80" : "#889995" }}>
-                <Filter className="w-4 h-4" />
+              <button 
+                onClick={() => setShowFilters(!showFilters)} 
+                className="px-4 rounded-xl border flex items-center justify-center transition-all hover:bg-white/5 relative shadow-sm" 
+                style={{ background: activeFilterCount > 0 ? "rgba(0,130,84,0.15)" : "#050a09", borderColor: activeFilterCount > 0 ? "#008254" : "var(--border)", color: activeFilterCount > 0 ? "#4ade80" : "#889995" }}
+              >
+                <Filter className="w-5 h-5" />
               </button>
 
               {showFilters && (
                 <div className="absolute top-[110%] right-0 w-64 p-4 rounded-2xl shadow-2xl border animate-in slide-in-from-top-2" style={{ background: "#0a1612", borderColor: "var(--border)", zIndex: 100 }}>
-                  <div className="flex items-center justify-between mb-3 border-b border-white/10 pb-2">
+                  <div className="flex items-center justify-between mb-4 border-b border-white/10 pb-3">
                     <p className="text-xs font-bold uppercase tracking-wider text-white">Review Filters</p>
                   </div>
-                  <div className="space-y-4">
+                  <div className="space-y-5">
                     <div>
-                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">Review Status</label>
-                      <div className="flex bg-[#050a09] border border-white/10 rounded-lg overflow-hidden p-1">
-                        <button onClick={() => setFilters({...filters, status: "due"})} className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${filters.status === 'due' ? 'bg-[#fbbf24]/20 text-[#fbbf24]' : 'text-[#889995] hover:text-white'}`}>Due / Overdue</button>
-                        <button onClick={() => setFilters({...filters, status: "all"})} className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${filters.status === 'all' ? 'bg-white/10 text-white' : 'text-[#889995] hover:text-white'}`}>All Clients</button>
+                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-2 block">Review Status</label>
+                      <div className="flex flex-col gap-1.5 bg-[#050a09] border border-white/10 rounded-xl p-1.5">
+                        <button onClick={() => setFilters({...filters, status: "due"})} className={`w-full py-2.5 text-xs font-bold rounded-lg transition-all ${filters.status === 'due' ? 'bg-[#fbbf24]/20 text-[#fbbf24]' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>Due / Overdue</button>
+                        <button onClick={() => setFilters({...filters, status: "unscheduled"})} className={`w-full py-2.5 text-xs font-bold rounded-lg transition-all ${filters.status === 'unscheduled' ? 'bg-[#f87171]/20 text-[#f87171]' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>Unscheduled Only</button>
+                        <button onClick={() => setFilters({...filters, status: "all"})} className={`w-full py-2.5 text-xs font-bold rounded-lg transition-all ${filters.status === 'all' ? 'bg-white/10 text-white' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>All Clients</button>
                       </div>
                     </div>
                     <div>
-                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">RM Assigned</label>
-                      <select value={filters.rm} onChange={e => setFilters({...filters, rm: e.target.value})} className="w-full bg-black border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-[#4ade80]">
+                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-2 block">RM Assigned</label>
+                      <select value={filters.rm} onChange={e => setFilters({...filters, rm: e.target.value})} className="w-full bg-[#050a09] border border-white/10 text-white text-sm rounded-xl p-2.5 outline-none focus:border-[#4ade80]">
                         <option value="">All RMs</option>
                         {uniqueRMs.map(rm => <option key={rm} value={rm}>{rm}</option>)}
                       </select>
                     </div>
                     <div>
-                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">Review Cycle</label>
-                      <select value={filters.cycle} onChange={e => setFilters({...filters, cycle: e.target.value})} className="w-full bg-black border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-[#4ade80]">
+                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-2 block">Review Cycle</label>
+                      <select value={filters.cycle} onChange={e => setFilters({...filters, cycle: e.target.value})} className="w-full bg-[#050a09] border border-white/10 text-white text-sm rounded-xl p-2.5 outline-none focus:border-[#4ade80]">
                         <option value="">All Cycles</option>
                         {CYCLES.map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
@@ -291,10 +304,13 @@ export default function ClientReview() {
                 </div>
               )}
             </div>
-            {filters.status === "due" && (
-              <div className="mt-3 p-2 bg-[#fbbf24]/10 border border-[#fbbf24]/20 rounded-lg flex items-center justify-center gap-2">
-                <AlertTriangle className="w-3.5 h-3.5 text-[#fbbf24]" />
-                <span className="text-[10px] font-bold text-[#fbbf24] uppercase tracking-wider">Showing Due / Overdue</span>
+
+            {(filters.status === "due" || filters.status === "unscheduled") && (
+              <div className={`mt-4 p-3 border rounded-xl flex items-center justify-center gap-2 ${filters.status === "unscheduled" ? "bg-[#f87171]/10 border-[#f87171]/20" : "bg-[#fbbf24]/10 border-[#fbbf24]/20"}`}>
+                <AlertTriangle className={`w-4 h-4 ${filters.status === "unscheduled" ? "text-[#f87171]" : "text-[#fbbf24]"}`} />
+                <span className={`text-[10px] font-bold uppercase tracking-wider ${filters.status === "unscheduled" ? "text-[#f87171]" : "text-[#fbbf24]"}`}>
+                  {filters.status === "unscheduled" ? "Showing Unscheduled" : "Showing Due / Overdue"}
+                </span>
               </div>
             )}
           </div>
@@ -334,9 +350,9 @@ export default function ClientReview() {
                   let dueColor = "text-[#889995]";
                   if (c.next_review_date) {
                     const revDate = parseISO(c.next_review_date);
-                    if (isBefore(revDate, startOfDay(new Date()))) dueColor = "text-[#f87171]"; 
-                    else if (isSameMonth(revDate, new Date())) dueColor = "text-[#fbbf24]"; 
-                  } else { dueColor = "text-[#fbbf24]"; }
+                    if (isBefore(revDate, startOfDay(new Date()))) dueColor = "text-[#f87171]"; // Overdue
+                    else if (isSameMonth(revDate, new Date())) dueColor = "text-[#fbbf24]"; // Due this month
+                  } else { dueColor = "text-[#f87171]"; }
 
                   return (
                     <button key={c.id} onClick={() => { setSelected(c); setExpandedGroup(null); }} className={`w-full text-left px-4 py-3 flex items-center gap-3 border-b border-white/5 transition-colors ${isActive ? 'bg-[#008254]/10' : 'hover:bg-white/5'}`}>
@@ -385,6 +401,7 @@ export default function ClientReview() {
                   </div>
                 </div>
 
+                {/* Scheduling Parameters */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <div>
                     <label className="text-[10px] font-bold text-[#889995] uppercase tracking-wider mb-2 block">Priority Level</label>
@@ -420,6 +437,7 @@ export default function ClientReview() {
                   </button>
                 </div>
 
+                {/* TAB 1: NOTES TIMELINE */}
                 {activeTab === "notes" && (
                   <div className="animate-in fade-in duration-200">
                     <div className="mb-8 p-4 rounded-xl border border-white/10 bg-black/20">
@@ -449,6 +467,7 @@ export default function ClientReview() {
                   </div>
                 )}
 
+                {/* TAB 2: REVIEW PLAN HISTORY */}
                 {activeTab === "plan" && (
                   <div className="animate-in fade-in duration-200">
                     <div className="flex justify-between items-center mb-6">
@@ -486,11 +505,13 @@ export default function ClientReview() {
         </div>
       </div>
 
+      {/* MASSIVE MODAL FOR VIEW / EDIT PLAN */}
       {showPlanModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <div className="w-full max-w-6xl bg-[#0a1612] border border-white/10 rounded-2xl flex flex-col max-h-[90vh] shadow-2xl relative overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm print-modal">
+          <div className="w-full max-w-6xl bg-[#0a1612] border border-white/10 rounded-2xl flex flex-col max-h-[90vh] shadow-2xl relative overflow-hidden print-modal">
             
-            <div className="px-6 py-4 border-b border-white/10 flex justify-between items-center bg-[#050a09] shrink-0">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-white/10 flex justify-between items-center bg-[#050a09] shrink-0 hide-on-print">
               <div>
                 <h2 className="text-lg font-black text-white">{planMode === 'edit' ? (activePlanId ? 'Edit Review Document' : 'New Review Document') : 'View Review Document'}</h2>
                 <p className="text-[10px] text-[#4ade80] uppercase tracking-widest font-bold mt-1">{selected?.client_name}</p>
@@ -517,8 +538,9 @@ export default function ClientReview() {
               </div>
             </div>
 
-            <div className="overflow-y-auto flex-1 custom-scrollbar bg-black/40">
-              <div ref={printRef} className="p-6 space-y-8 bg-[#0a1612]">
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto flex-1 custom-scrollbar space-y-8 bg-black/40">
+              <div ref={printRef} className="space-y-8 bg-[#0a1612] p-2">
                 
                 {planMode === 'view' && (
                   <div className="text-center mb-6 pt-2 pb-6 border-b border-white/10">
@@ -529,18 +551,19 @@ export default function ClientReview() {
                   </div>
                 )}
 
+                {/* SECTION 1: MF PORTFOLIO */}
                 <div className="rounded-xl border border-white/10 overflow-hidden bg-[#0a1612]">
-                  <div style={{ ...sectionHeader, background: "rgba(96, 165, 250, 0.15)", color: "#60a5fa" }}>Mutual Fund Portfolio</div>
+                  <div style={{ ...sectionHeader, background: "rgba(96, 165, 250, 0.15)", color: "#60a5fa" }} className="print:bg-blue-50 print:text-blue-800 print:border-b print:border-blue-200">Mutual Fund Portfolio</div>
                   <div className="p-4 grid grid-cols-2 md:grid-cols-6 gap-4">
                     {["Net Investment", "Current Value", "Gain", "SIP", "XIRR", "Remarks"].map((lbl, i) => {
                       const keys = ["net_investment", "current_value", "gain", "sip", "xirr", "remarks"];
                       return (
                         <div key={lbl}>
-                          <label className="text-[9px] font-bold text-[#889995] uppercase block mb-1">{lbl}</label>
+                          <label className="text-[9px] font-bold text-[#889995] uppercase block mb-1 print:text-gray-500">{lbl}</label>
                           {planMode === 'edit' ? (
                             <input value={planDraft.portfolio?.[keys[i]] || ""} onChange={e => setNested('portfolio', keys[i], e.target.value)} style={iStyle} />
                           ) : (
-                            <div style={viewValStyle}>{planDraft.portfolio?.[keys[i]] || "—"}</div>
+                            <div style={viewValStyle} className="print:text-black print:font-bold">{planDraft.portfolio?.[keys[i]] || "—"}</div>
                           )}
                         </div>
                       )
@@ -548,19 +571,21 @@ export default function ClientReview() {
                   </div>
                 </div>
 
+                {/* SECTION 2: SIP INCREASE */}
                 <div className="rounded-xl border border-white/10 overflow-hidden bg-[#0a1612]">
-                  <div style={{ ...sectionHeader, background: "rgba(232, 121, 249, 0.15)", color: "#e879f9" }}>SIP To Increase</div>
+                  <div style={{ ...sectionHeader, background: "rgba(232, 121, 249, 0.15)", color: "#e879f9" }} className="print:bg-fuchsia-50 print:text-fuchsia-800 print:border-b print:border-fuchsia-200">SIP To Increase</div>
                   <div className="p-4">
                     {planMode === 'edit' ? (
                       <input placeholder="Enter amount or details..." value={planDraft.sip_increase || ""} onChange={e => setPlanDraft(p => ({...p, sip_increase: e.target.value}))} style={iStyle} />
                     ) : (
-                      <div style={viewValStyle}>{planDraft.sip_increase || "—"}</div>
+                      <div style={viewValStyle} className="print:text-black">{planDraft.sip_increase || "—"}</div>
                     )}
                   </div>
                 </div>
 
+                {/* SECTION 3: MF ACTION */}
                 <div className="rounded-xl border border-white/10 overflow-hidden bg-[#0a1612]">
-                  <div style={{ ...sectionHeader, background: "rgba(251, 191, 36, 0.15)", color: "#fbbf24" }}>MF Action</div>
+                  <div style={{ ...sectionHeader, background: "rgba(251, 191, 36, 0.15)", color: "#fbbf24" }} className="print:bg-amber-50 print:text-amber-800 print:border-b print:border-amber-200">MF Action</div>
                   <div className="overflow-x-auto p-1">
                     <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "800px" }}>
                       <thead>
@@ -606,8 +631,9 @@ export default function ClientReview() {
                   </div>
                 </div>
 
+                {/* SECTION 4: PROTECTION */}
                 <div className="rounded-xl border border-white/10 overflow-hidden bg-[#0a1612]">
-                  <div style={{ ...sectionHeader, background: "rgba(167, 139, 250, 0.15)", color: "#a78bfa" }}>Protection</div>
+                  <div style={{ ...sectionHeader, background: "rgba(167, 139, 250, 0.15)", color: "#a78bfa" }} className="print:bg-purple-50 print:text-purple-800 print:border-b print:border-purple-200">Protection</div>
                   <div className="overflow-x-auto p-1">
                     <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "600px" }}>
                       <thead>
@@ -627,7 +653,7 @@ export default function ClientReview() {
                           { key: "emergency", label: "Emergency Fund" }
                         ].map((row) => (
                           <tr key={row.key}>
-                            <td style={{...tdStyle, fontSize:12, fontWeight:700, color:"#c8d4d0"}}>{row.label}</td>
+                            <td style={{...tdStyle, fontSize:12, fontWeight:700, color:"#c8d4d0"}} className="print:text-black">{row.label}</td>
                             <td style={tdStyle}>{planMode === 'edit' ? <input value={planDraft.protection?.[row.key]?.cover || ""} onChange={e => setDoubleNested('protection', row.key, 'cover', e.target.value)} style={iStyle} /> : <div style={viewValStyle}>{planDraft.protection?.[row.key]?.cover || "—"}</div>}</td>
                             <td style={tdStyle}>{planMode === 'edit' ? <input value={planDraft.protection?.[row.key]?.range || ""} onChange={e => setDoubleNested('protection', row.key, 'range', e.target.value)} style={iStyle} /> : <div style={viewValStyle}>{planDraft.protection?.[row.key]?.range || "—"}</div>}</td>
                             <td style={tdStyle}>{planMode === 'edit' ? <input value={planDraft.protection?.[row.key]?.suggestion || ""} onChange={e => setDoubleNested('protection', row.key, 'suggestion', e.target.value)} style={iStyle} /> : <div style={viewValStyle}>{planDraft.protection?.[row.key]?.suggestion || "—"}</div>}</td>
@@ -639,8 +665,9 @@ export default function ClientReview() {
                   </div>
                 </div>
 
+                {/* SECTION 5: GOAL PLANNING */}
                 <div className="rounded-xl border border-white/10 overflow-hidden bg-[#0a1612]">
-                  <div style={{ ...sectionHeader, background: "rgba(251, 146, 60, 0.15)", color: "#fb923c" }}>Goal Planning</div>
+                  <div style={{ ...sectionHeader, background: "rgba(251, 146, 60, 0.15)", color: "#fb923c" }} className="print:bg-orange-50 print:text-orange-800 print:border-b print:border-orange-200">Goal Planning</div>
                   <div className="overflow-x-auto p-1">
                     <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "800px" }}>
                       <thead>
@@ -665,7 +692,7 @@ export default function ClientReview() {
                         ].map((row, i) => (
                           <tr key={row.key}>
                             <td style={{...tdStyle, textAlign:"center", fontSize:11, color:"#889995"}}>{i+1}</td>
-                            <td style={{...tdStyle, fontSize:12, fontWeight:700, color:"#c8d4d0"}}>{row.label}</td>
+                            <td style={{...tdStyle, fontSize:12, fontWeight:700, color:"#c8d4d0"}} className="print:text-black">{row.label}</td>
                             
                             <td style={tdStyle}>
                               {planMode === 'edit' ? (
@@ -688,7 +715,7 @@ export default function ClientReview() {
                             <td style={tdStyle}>
                               {planMode === 'edit' ? (
                                 <input type="date" value={planDraft.goals?.[row.key]?.date || ""} onChange={e => setDoubleNested('goals', row.key, 'date', e.target.value)} style={{...iStyle, color: "#fbbf24"}} />
-                              ) : <div style={{...viewValStyle, color: "#fbbf24"}}>{planDraft.goals?.[row.key]?.date ? format(parseISO(planDraft.goals?.[row.key]?.date), "dd MMM yyyy") : "—"}</div>}
+                              ) : <div style={{...viewValStyle, color: "#fbbf24"}} className="print:text-black">{planDraft.goals?.[row.key]?.date ? format(parseISO(planDraft.goals?.[row.key]?.date), "dd MMM yyyy") : "—"}</div>}
                             </td>
                             
                             <td style={tdStyle}>{planMode === 'edit' ? <input value={planDraft.goals?.[row.key]?.sip || ""} onChange={e => setDoubleNested('goals', row.key, 'sip', e.target.value)} style={iStyle} /> : <div style={viewValStyle}>{planDraft.goals?.[row.key]?.sip || "—"}</div>}</td>
@@ -703,10 +730,10 @@ export default function ClientReview() {
 
               </div>
             </div>
-
           </div>
         </div>
       )}
+
     </div>
   );
 }

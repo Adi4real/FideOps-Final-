@@ -1,15 +1,15 @@
 import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import {
   CheckCircle2, Clock, AlertTriangle, CalendarClock,
-  TrendingUp, Users, UserPlus, ArrowRight
+  TrendingUp, Users, UserPlus, ArrowRight, ClipboardCheck, AlertCircle
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell, Legend
 } from "recharts";
-import { format, isToday, isPast, parseISO, startOfMonth, subMonths } from "date-fns";
+import { format, isToday, isPast, parseISO, startOfMonth, subMonths, endOfMonth } from "date-fns";
 
 // Firebase Imports
 import { db } from "../firebase"; 
@@ -23,46 +23,104 @@ const tooltipStyle = {
   cursor: { fill: "rgba(255,255,255,0.03)" },
 };
 
+// --- GLOBAL MEMORY CACHE (0 READS ON TAB SWITCH) ---
+let cachedTasks = [];
+let cachedLeads = [];
+let cachedClients = [];
+let isListeningT = false;
+let isListeningL = false;
+let isListeningC = false;
+let subsT = new Set();
+let subsL = new Set();
+let subsC = new Set();
+
 export default function Dashboard() {
-  const [tasks, setTasks] = useState([]);
-  const [leads, setLeads] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [tasks, setTasks] = useState(cachedTasks);
+  const [leads, setLeads] = useState(cachedLeads);
+  const [clients, setClients] = useState(cachedClients);
+  const [loading, setLoading] = useState(cachedTasks.length === 0 || cachedClients.length === 0);
 
-  // --- READ OPTIMIZATION: Only fetch the last 6 months of data ---
+  // Filter for Review Metrics
+  const [reviewMonth, setReviewMonth] = useState(format(new Date(), "yyyy-MM"));
+
+  // --- SMART CACHED FETCH ---
   useEffect(() => {
-    const sixMonthsAgo = format(subMonths(new Date(), 5), "yyyy-MM-01");
-    
-    const tasksRef = collection(db, "tasks");
-    const leadsRef = collection(db, "leads");
+    subsT.add(setTasks);
+    subsL.add(setLeads);
+    subsC.add(setClients);
 
-    // Bound tasks to last 6 months to drastically reduce reads
-    const qTasks = query(tasksRef, where("entry_date", ">=", sixMonthsAgo));
-    // Bound leads to last 6 months
-    const qLeads = query(leadsRef, where("created_at", ">=", new Date(sixMonthsAgo)));
+    const sixMonthsAgoStr = format(subMonths(new Date(), 5), "yyyy-MM-01");
+    const sixMonthsAgoDate = new Date(sixMonthsAgoStr);
 
-    const unsubTasks = onSnapshot(qTasks, (snap) => {
-      setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    if (!isListeningT) {
+      isListeningT = true;
+      const qTasks = query(collection(db, "tasks"), where("entry_date", ">=", sixMonthsAgoStr));
+      onSnapshot(qTasks, (snap) => {
+        cachedTasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        subsT.forEach(cb => cb(cachedTasks));
+      });
+    }
 
-    const unsubLeads = onSnapshot(qLeads, (snap) => {
-      setLeads(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    if (!isListeningL) {
+      isListeningL = true;
+      const qLeads = query(collection(db, "leads"), where("created_at", ">=", sixMonthsAgoDate));
+      onSnapshot(qLeads, (snap) => {
+        cachedLeads = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        subsL.forEach(cb => cb(cachedLeads));
+      }, (err) => {
+        console.warn("Leads index missing, fetching active only.", err);
+        onSnapshot(collection(db, "leads"), snap => {
+          cachedLeads = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          subsL.forEach(cb => cb(cachedLeads));
+        });
+      });
+    }
+
+    if (!isListeningC) {
+      isListeningC = true;
+      onSnapshot(collection(db, "clients"), (snap) => {
+        cachedClients = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        subsC.forEach(cb => cb(cachedClients));
+        setLoading(false);
+      });
+    } else {
       setLoading(false);
-    }, (err) => {
-      // Fallback if index isn't built yet, though usually dates work fine
-      console.warn("Leads index missing, fetching active only.", err);
-      setLoading(false);
-    });
+    }
 
-    return () => { unsubTasks(); unsubLeads(); };
+    return () => { 
+      subsT.delete(setTasks); 
+      subsL.delete(setLeads); 
+      subsC.delete(setClients); 
+    };
   }, []);
 
+  // --- TASK METRICS ---
   const active = tasks.filter(t => !["Completed", "Cancelled"].includes(t.status));
   const completed = tasks.filter(t => t.status === "Completed");
   const overdue = active.filter(t => t.follow_up_date && isPast(parseISO(t.follow_up_date)) && !isToday(parseISO(t.follow_up_date)));
   const todayFollowups = active.filter(t => t.follow_up_date && isToday(parseISO(t.follow_up_date)));
+  
+  // --- LEAD METRICS ---
   const activeLeads = leads.filter(l => l.status !== "Converted");
   const convertedLeads = leads.filter(l => l.status === "Converted");
 
+  // --- REVIEW METRICS ---
+  const unscheduledReviews = clients.filter(c => !c.next_review_date).length;
+  
+  // Completed in selected month (Checks the review timeline logs)
+  const completedReviewsThisMonth = clients.filter(c => 
+    (c.review_notes || []).some(n => n.date.startsWith(reviewMonth) && n.text.includes("Review Completed"))
+  ).length;
+
+  // Pending for selected month (next_review_date is on or before the end of the selected month)
+  const endOfSelectedMonthStr = `${reviewMonth}-31`; // Safe string comparison boundary
+  const pendingReviewsThisMonth = clients.filter(c => 
+    c.next_review_date && c.next_review_date <= endOfSelectedMonthStr
+  ).length;
+
+  const totalReviewsThisMonth = pendingReviewsThisMonth + completedReviewsThisMonth;
+
+  // --- CHARTS DATA ---
   const byEmployee = {};
   tasks.forEach(t => { if (t.assigned_to) byEmployee[t.assigned_to] = (byEmployee[t.assigned_to] || 0) + 1; });
   const employeeData = Object.entries(byEmployee).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 6);
@@ -108,6 +166,18 @@ export default function Dashboard() {
 
   return (
     <div className="p-4 lg:p-8 space-y-8" style={{ background: "var(--bg-black)", minHeight: "100vh" }}>
+      <style>{`
+        input[type="month"]::-webkit-calendar-picker-indicator {
+          filter: invert(83%) sepia(51%) saturate(1149%) hue-rotate(339deg) brightness(101%) contrast(105%);
+          cursor: pointer;
+        }
+        input[type="month"] {
+          color-scheme: dark;
+          color: #fbbf24 !important; 
+          font-weight: 700;
+        }
+      `}</style>
+      
       <div>
         <h1 className="text-2xl font-bold" style={{ color: "#c8d4d0" }}>Dashboard</h1>
         <p className="text-sm mt-1" style={{ color: "#889995" }}>Overview of operations (Last 6 Months)</p>
@@ -152,6 +222,64 @@ export default function Dashboard() {
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* --- NEW SECTION: CLIENT REVIEW METRICS --- */}
+      <div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 2, color: "#fbbf24", background: "rgba(251,191,36,0.1)", padding: "3px 10px", borderRadius: 20, border: "1px solid rgba(251,191,36,0.2)" }}>Client Review Tracker</span>
+            <Link to={createPageUrl("ClientReview")} style={{ fontSize: 11, color: "#fbbf24", display: "flex", alignItems: "center", gap: 4 }}>Review Dashboard <ArrowRight className="w-3 h-3" /></Link>
+          </div>
+          
+          <div style={{ display: "flex", alignItems: "center", background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "10px", padding: "4px 10px" }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#889995", uppercase: true, marginRight: "8px" }}>Filter: </span>
+            <input 
+              type="month" 
+              value={reviewMonth} 
+              onChange={e => setReviewMonth(e.target.value)} 
+              style={{ background: "transparent", border: "none", outline: "none", fontSize: "12px" }} 
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          
+          {/* LINK TO CLIENT REVIEW PAGE WITH FILTER STATE */}
+          <Link to={createPageUrl("ClientReview")} state={{ filterStatus: "unscheduled" }} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
+            <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16 }} className="hover:border-[#f87171] hover:bg-white/5 transition-all">
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(248,113,113,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <AlertCircle style={{ width: 20, height: 20, color: "#f87171" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 26, fontWeight: 800, color: "#c8d4d0", lineHeight: 1 }}>{unscheduledReviews}</p>
+                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Unscheduled Reviews</p>
+              </div>
+            </div>
+          </Link>
+
+          <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(96,165,250,0.3)" }}>
+            <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(96,165,250,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <ClipboardCheck style={{ width: 20, height: 20, color: "#60a5fa" }} />
+            </div>
+            <div>
+              <p style={{ fontSize: 26, fontWeight: 800, color: "#60a5fa", lineHeight: 1 }}>
+                {pendingReviewsThisMonth} <span style={{fontSize: 12, color: "#889995", fontWeight: 600}}>/ {totalReviewsThisMonth}</span>
+              </p>
+              <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Pending Due For {format(new Date(`${reviewMonth}-01`), "MMMM")}</p>
+            </div>
+          </div>
+
+          <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(74,222,128,0.3)" }}>
+            <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(74,222,128,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <CheckCircle2 style={{ width: 20, height: 20, color: "#4ade80" }} />
+            </div>
+            <div>
+              <p style={{ fontSize: 26, fontWeight: 800, color: "#4ade80", lineHeight: 1 }}>{completedReviewsThisMonth}</p>
+              <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Completed In {format(new Date(`${reviewMonth}-01`), "MMMM")}</p>
+            </div>
+          </div>
         </div>
       </div>
 
