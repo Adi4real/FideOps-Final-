@@ -84,21 +84,37 @@ export default function Layout({ children, currentPageName }) {
     return () => unsubscribe();
   }, []);
 
-  // --- 0 FIREBASE READS: Fetch from Yahoo Finance ---
+  // --- 0 FIREBASE READS: Fetch from Yahoo Finance with Fallback Proxies ---
   useEffect(() => {
     const fetchMarket = async () => {
       setMarketData(prev => ({ ...prev, loading: true, error: false }));
       try {
         const fetchIndex = async (symbol) => {
           const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`;
-          // FIXED FOR VERCEL: Switched to AllOrigins proxy which allows production domains
-          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
           
-          const res = await fetch(proxyUrl);
-          if (!res.ok) throw new Error("Network response was not ok");
-          const data = await res.json();
+          // BULLETPROOF FIX: Multiple proxies. If Vercel blocks one, it automatically uses the next.
+          const proxies = [
+            `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+            `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+            `https://corsproxy.io/?${encodeURIComponent(url)}`
+          ];
+
+          let data = null;
+          for (const proxy of proxies) {
+            try {
+              const res = await fetch(proxy);
+              if (res.ok) {
+                data = await res.json();
+                break; // Exit loop on first successful proxy
+              }
+            } catch (err) {
+              console.warn(`Proxy ${proxy} failed, trying next...`);
+            }
+          }
+
+          if (!data) throw new Error("All proxies failed to fetch market data.");
+
           const meta = data.chart.result[0].meta;
-          
           const price = meta.regularMarketPrice;
           const prevClose = meta.previousClose;
           const change = price - prevClose;

@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
-import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check, ListTodo, Info, Save, X } from "lucide-react";
+import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check, ListTodo, Info, Save, X, Target } from "lucide-react";
 
 import { db } from "../firebase"; 
 import { collection, query, onSnapshot, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, where, getDocs } from "firebase/firestore";
 
 import ClientImport from "@/components/clients/ClientImport.jsx";
 import ClientForm from "@/components/clients/ClientForm.jsx";
-import { format, parseISO } from "date-fns";
+import { format, parseISO, addYears } from "date-fns";
 
 // --- CONSTANTS ---
 const CATEGORY_ACTIONS = {
@@ -30,6 +30,32 @@ const getSIPTotal = (investments) => {
     const amt = parseFloat(String(inv.installment_amount).replace(/,/g, ''));
     return sum + (isNaN(amt) ? 0 : amt);
   }, 0);
+};
+
+// --- HELPER: Calculate Goal Progress ---
+const calculateGoalMath = (data) => {
+  const pv = parseFloat(data.pv) || 0;
+  const years = parseFloat(data.years) || 0;
+  const inf = parseFloat(data.inf) / 100 || 0;
+  const growth = parseFloat(data.growth) / 100 || 0;
+
+  const goalFV = pv * Math.pow((1 + inf), years);
+  const r = growth > 0 ? Math.pow((1 + growth), 1/12) - 1 : 0;
+  const n = years * 12;
+  const af = (n > 0 && r > 0) ? ((Math.pow(1 + r, n) - 1) / r) * (1 + r) : n;
+
+  let totalSIP = 0, totalLS = 0;
+  (data.investments || []).forEach(inv => {
+    const amt = parseFloat(inv.amount) || 0;
+    if (inv.type === "SIP") totalSIP += amt; else totalLS += amt;
+  });
+
+  const sipMaturity = totalSIP * af;
+  const lsMaturity = totalLS * Math.pow((1 + growth), years);
+  const projectedMaturity = sipMaturity + lsMaturity;
+  const gap = goalFV - projectedMaturity;
+
+  return { goalFV, projectedMaturity, gap };
 };
 
 function numberToWords(num) {
@@ -342,7 +368,7 @@ export default function Clients() {
         key={c.id}
         onClick={() => { 
           if (isBulkMode) toggleSelection(c.id);
-          else { setSelected(c); setExpandedInv(null); setExpandedTask(null); setEditingTaskId(null); }
+          else { setSelected(c); setExpandedInv(null); setExpandedTask(null); setEditingTaskId(null); setActiveTab("timeline"); }
         }}
         className={`w-full text-left py-3 flex items-center gap-3 transition-colors ${isSelectedForDeletion ? 'bg-red-500/10' : ''} ${isSubItem ? 'pl-10 pr-4 border-l-2 border-brand-green/40 hover:bg-white/5' : 'px-4 hover:bg-white/5 border-b border-[var(--border)]'}`}
         style={{ background: isActive ? "rgba(0, 130, 84, 0.12)" : isSelectedForDeletion ? "rgba(248, 113, 113, 0.1)" : "transparent" }}
@@ -605,7 +631,11 @@ export default function Clients() {
                   </button>
                   <button onClick={() => setActiveTab('portfolio')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'portfolio' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}>
                     <Wallet className="w-4 h-4" />
-                    Investment Portfolio ({selected.investments?.length || 0})
+                    SIP ({selected.investments?.length || 0})
+                  </button>
+                  <button onClick={() => setActiveTab('goals')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'goals' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}>
+                    <Target className="w-4 h-4" />
+                    Financial Goals ({selected.financial_goals?.length || 0})
                   </button>
                 </div>
 
@@ -920,6 +950,62 @@ export default function Clients() {
                             </div>
                           </div>
                         ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 3: FINANCIAL GOALS (NEW) */}
+                {activeTab === "goals" && (
+                  <div className="animate-in fade-in duration-200">
+                    {(!selected.financial_goals || selected.financial_goals.length === 0) ? (
+                      <div className="text-center py-12 border border-dashed border-white/10 rounded-xl bg-black/20">
+                        <p className="text-sm text-[#889995] mb-4">No financial goals found for this client.</p>
+                        <p className="text-xs text-white/50">Use the <strong className="text-brand-green">Goal Tracker</strong> tab in the sidebar to add and configure new goals.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
+                        {selected.financial_goals.map((goal, idx) => {
+                          const math = calculateGoalMath(goal);
+                          const targetDate = addYears(parseISO(goal.date), parseFloat(goal.years));
+                          const pct = Math.min(100, Math.round((math.projectedMaturity / math.goalFV) * 100)) || 0;
+
+                          return (
+                            <div key={idx} className="p-5 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all">
+                              <div className="flex justify-between items-start mb-4">
+                                <div>
+                                  <p className="text-sm font-bold text-white">{goal.goalType === "Custom..." ? goal.customGoal : goal.goalType}</p>
+                                  <p className="text-[10px] text-brand-green mt-1 font-bold uppercase tracking-wider">{goal.status} · {goal.years} YRS</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-[10px] font-bold text-[#889995] uppercase">Target Date</p>
+                                  <p className="text-sm font-bold text-white">{format(targetDate, "MMM yyyy")}</p>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-4 mb-4">
+                                <div>
+                                  <p className="text-[9px] font-bold text-[#889995] uppercase">Target Future Value</p>
+                                  <p className="text-base font-black text-[#fbbf24]">₹{Math.round(math.goalFV).toLocaleString('en-IN')}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-[9px] font-bold text-[#889995] uppercase">Projected Maturity</p>
+                                  <p className="text-base font-black text-[#4ade80]">₹{Math.round(math.projectedMaturity).toLocaleString('en-IN')}</p>
+                                </div>
+                              </div>
+
+                              <div>
+                                <div className="flex justify-between text-[10px] font-bold mb-1">
+                                  <span className="text-[#889995]">Funding Progress</span>
+                                  <span className={math.gap <= 0 ? "text-[#4ade80]" : "text-[#f87171]"}>{pct}%</span>
+                                </div>
+                                <div className="w-full bg-black/40 rounded-full h-1.5 overflow-hidden">
+                                  <div className="h-full bg-[#4ade80] transition-all duration-500" style={{ width: `${pct}%` }} />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
