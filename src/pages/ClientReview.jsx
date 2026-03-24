@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Search, ChevronRight, ChevronDown, ChevronUp, Save, Plus, X, Clock, FileText, CheckCircle2, Filter, CalendarCheck, AlertTriangle, Star, Edit3, Download, Image as ImageIcon } from "lucide-react";
 import { format, parseISO, addMonths, addYears, isBefore, isSameMonth, endOfMonth, startOfDay } from "date-fns";
-import html2canvas from "html2canvas"; // <-- NEW IMPORT
+import html2canvas from "html2canvas";
 
 // Firebase Imports
 import { db } from "../firebase"; 
@@ -31,53 +31,61 @@ const emptyPlan = {
   }
 };
 
+// --- GLOBAL MEMORY CACHE (0 READS ON TAB SWITCH) ---
+let cachedClients = [];
+let isListeningClients = false;
+let clientSubs = new Set();
+
 export default function ClientReview() {
-  const [clients, setClients] = useState([]);
+  const [clients, setClients] = useState(cachedClients);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(cachedClients.length === 0);
   const [expandedGroup, setExpandedGroup] = useState(null);
   const [activeTab, setActiveTab] = useState("notes");
 
-  // Filters State
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState({ rm: "", cycle: "", status: "due" });
-
-  // States for Notes
   const [newNote, setNewNote] = useState("");
   const [savingNote, setSavingNote] = useState(false);
 
-  // States for Plan Modal (History & Editing)
   const [showPlanModal, setShowPlanModal] = useState(false);
   const [planMode, setPlanMode] = useState("view"); 
   const [activePlanId, setActivePlanId] = useState(null);
   const [planDraft, setPlanDraft] = useState(emptyPlan);
   const [savingPlan, setSavingPlan] = useState(false);
-  const [exporting, setExporting] = useState(false); // Image export state
-  
-  const printRef = useRef(null); // Ref for image capture
+  const [exporting, setExporting] = useState(false);
+  const printRef = useRef(null);
 
-  // Fetch Clients
+  // --- SMART CACHED FETCH ---
   useEffect(() => {
-    const clientsRef = collection(db, "clients");
-    const q = query(clientsRef, orderBy("client_name"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const clientData = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      setClients(clientData);
-      setLoading(false);
-      
-      setSelected(prev => {
-        if (!prev) return null;
-        const updatedSelected = clientData.find(c => c.id === prev.id);
-        return updatedSelected || prev;
+    clientSubs.add(setClients);
+    if (!isListeningClients) {
+      isListeningClients = true;
+      const q = query(collection(db, "clients"), orderBy("client_name"));
+      onSnapshot(q, (snapshot) => {
+        cachedClients = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        clientSubs.forEach(cb => cb(cachedClients));
+        setLoading(false);
       });
-    });
-    return () => unsubscribe();
+    } else {
+      setLoading(false);
+    }
+    return () => clientSubs.delete(setClients);
   }, []);
+
+  useEffect(() => {
+    if (selected) {
+      const updated = clients.find(c => c.id === selected.id);
+      if (updated) {
+        setSelected(updated);
+        setPlanDraft(updated.review_plan || emptyPlan);
+      }
+    }
+  }, [clients]);
 
   const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
 
-  // Smart Filtering Logic
   const filtered = clients.filter(c => {
     const matchesSearch = search.length < 1 || 
       c.client_name?.toLowerCase().includes(search.toLowerCase()) ||
@@ -157,7 +165,6 @@ export default function ClientReview() {
     } catch (e) { console.error(e); } finally { setSavingNote(false); }
   };
 
-  // --- MODAL LOGIC & SAVING MULTIPLE PLANS ---
   const handleCreateNewPlan = () => {
     setPlanDraft(emptyPlan);
     setActivePlanId(null);
@@ -183,65 +190,43 @@ export default function ClientReview() {
         const idx = newPlans.findIndex(p => p.id === activePlanId);
         if (idx > -1) newPlans[idx] = { ...planDraft, id: activePlanId, date: planDraft.date || format(new Date(), "yyyy-MM-dd") };
       } else {
-        newPlans.push({
-          id: Date.now().toString(),
-          date: format(new Date(), "yyyy-MM-dd"),
-          ...planDraft
-        });
+        newPlans.push({ id: Date.now().toString(), date: format(new Date(), "yyyy-MM-dd"), ...planDraft });
       }
       await updateDoc(doc(db, "clients", selected.id), { review_plans: newPlans });
       setShowPlanModal(false);
-    } catch (e) {
-      console.error("Error saving plan:", e);
-      alert("Failed to save plan. See console.");
-    } finally { setSavingPlan(false); }
+    } catch (e) { console.error("Error saving plan:", e); alert("Failed to save plan."); } 
+    finally { setSavingPlan(false); }
   };
 
-  // --- HIGH RES IMAGE EXPORTER ---
   const handleDownloadImage = async () => {
     if (!printRef.current) return;
     setExporting(true);
-    
     try {
       const element = printRef.current;
-      // Temporarily expand height to capture everything that might be scrolling
       const originalHeight = element.style.height;
       const originalOverflow = element.style.overflow;
       element.style.height = 'auto';
       element.style.overflow = 'visible';
 
-      const canvas = await html2canvas(element, {
-        backgroundColor: '#0a1612', 
-        scale: 2, 
-        useCORS: true,
-        logging: false,
-      });
-      
+      const canvas = await html2canvas(element, { backgroundColor: '#0a1612', scale: 2, useCORS: true, logging: false });
       const dataUrl = canvas.toDataURL('image/png');
       const link = document.createElement('a');
       link.download = `${selected?.client_name.replace(/\s+/g, '_')}_Review.png`;
       link.href = dataUrl;
       link.click();
 
-      // Restore styles
       element.style.height = originalHeight;
       element.style.overflow = originalOverflow;
-    } catch (err) {
-      console.error("Failed to export image", err);
-      alert("Failed to generate image.");
-    } finally {
-      setExporting(false);
-    }
+    } catch (err) { console.error("Failed to export image", err); alert("Failed to generate image."); } 
+    finally { setExporting(false); }
   };
 
-  // State Updates for Draft
   const setNested = (section, field, value) => { setPlanDraft(p => ({ ...p, [section]: { ...p[section], [field]: value } })); };
   const setDoubleNested = (section, item, field, value) => { setPlanDraft(p => ({ ...p, [section]: { ...p[section], [item]: { ...p[section][item], [field]: value } } })); };
   const addMfAction = () => { setPlanDraft(p => ({ ...p, mf_actions: [...(p.mf_actions || []), { fund: "", sip_increase: "", sip_cease: "", switch: "", redemption: "", action: "", suggestion: "", remarks: "" }] })); };
   const updateMfAction = (index, field, value) => { setPlanDraft(p => { const updated = [...p.mf_actions]; updated[index][field] = value; return { ...p, mf_actions: updated }; }); };
   const removeMfAction = (index) => { setPlanDraft(p => ({ ...p, mf_actions: p.mf_actions.filter((_, i) => i !== index) })); };
 
-  // Styles
   const iStyle = { padding: "8px 12px", borderRadius: 8, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.1)", color: "#c8d4d0", fontSize: 13, width: "100%", outline: "none" };
   const thStyle = { padding: "10px", textAlign: "left", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "#889995", borderBottom: "1px solid rgba(255,255,255,0.05)", background: "rgba(255,255,255,0.02)" };
   const tdStyle = { padding: "6px", borderBottom: "1px solid rgba(255,255,255,0.02)" };
@@ -263,7 +248,6 @@ export default function ClientReview() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        
         {/* Left Sidebar (List & Filters) */}
         <div className="lg:col-span-1 rounded-2xl flex flex-col sticky top-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)", height: "calc(100vh - 120px)" }}>
           <div className="p-4 flex-shrink-0 z-20 bg-[#0a1612] rounded-t-2xl" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -350,8 +334,8 @@ export default function ClientReview() {
                   let dueColor = "text-[#889995]";
                   if (c.next_review_date) {
                     const revDate = parseISO(c.next_review_date);
-                    if (isBefore(revDate, startOfDay(new Date()))) dueColor = "text-[#f87171]"; // Overdue
-                    else if (isSameMonth(revDate, new Date())) dueColor = "text-[#fbbf24]"; // Due this month
+                    if (isBefore(revDate, startOfDay(new Date()))) dueColor = "text-[#f87171]"; 
+                    else if (isSameMonth(revDate, new Date())) dueColor = "text-[#fbbf24]"; 
                   } else { dueColor = "text-[#fbbf24]"; }
 
                   return (
@@ -401,7 +385,6 @@ export default function ClientReview() {
                   </div>
                 </div>
 
-                {/* Scheduling Parameters */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <div>
                     <label className="text-[10px] font-bold text-[#889995] uppercase tracking-wider mb-2 block">Priority Level</label>
@@ -437,7 +420,6 @@ export default function ClientReview() {
                   </button>
                 </div>
 
-                {/* TAB 1: NOTES TIMELINE */}
                 {activeTab === "notes" && (
                   <div className="animate-in fade-in duration-200">
                     <div className="mb-8 p-4 rounded-xl border border-white/10 bg-black/20">
@@ -467,7 +449,6 @@ export default function ClientReview() {
                   </div>
                 )}
 
-                {/* TAB 2: REVIEW PLAN HISTORY */}
                 {activeTab === "plan" && (
                   <div className="animate-in fade-in duration-200">
                     <div className="flex justify-between items-center mb-6">
@@ -505,12 +486,10 @@ export default function ClientReview() {
         </div>
       </div>
 
-      {/* MASSIVE MODAL FOR VIEW / EDIT PLAN */}
       {showPlanModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="w-full max-w-6xl bg-[#0a1612] border border-white/10 rounded-2xl flex flex-col max-h-[90vh] shadow-2xl relative overflow-hidden">
             
-            {/* Modal Header */}
             <div className="px-6 py-4 border-b border-white/10 flex justify-between items-center bg-[#050a09] shrink-0">
               <div>
                 <h2 className="text-lg font-black text-white">{planMode === 'edit' ? (activePlanId ? 'Edit Review Document' : 'New Review Document') : 'View Review Document'}</h2>
@@ -538,11 +517,9 @@ export default function ClientReview() {
               </div>
             </div>
 
-            {/* Scrollable Body - Wrapped for Image Export */}
             <div className="overflow-y-auto flex-1 custom-scrollbar bg-black/40">
               <div ref={printRef} className="p-6 space-y-8 bg-[#0a1612]">
                 
-                {/* Clean Title only visible inside the image container */}
                 {planMode === 'view' && (
                   <div className="text-center mb-6 pt-2 pb-6 border-b border-white/10">
                     <h1 className="text-2xl font-black text-white tracking-tight">{selected?.client_name} <span className="font-medium text-white/50">|</span> Portfolio Review Report</h1>
@@ -552,7 +529,6 @@ export default function ClientReview() {
                   </div>
                 )}
 
-                {/* SECTION 1: MF PORTFOLIO */}
                 <div className="rounded-xl border border-white/10 overflow-hidden bg-[#0a1612]">
                   <div style={{ ...sectionHeader, background: "rgba(96, 165, 250, 0.15)", color: "#60a5fa" }}>Mutual Fund Portfolio</div>
                   <div className="p-4 grid grid-cols-2 md:grid-cols-6 gap-4">
@@ -572,7 +548,6 @@ export default function ClientReview() {
                   </div>
                 </div>
 
-                {/* SECTION 2: SIP INCREASE */}
                 <div className="rounded-xl border border-white/10 overflow-hidden bg-[#0a1612]">
                   <div style={{ ...sectionHeader, background: "rgba(232, 121, 249, 0.15)", color: "#e879f9" }}>SIP To Increase</div>
                   <div className="p-4">
@@ -584,7 +559,6 @@ export default function ClientReview() {
                   </div>
                 </div>
 
-                {/* SECTION 3: MF ACTION */}
                 <div className="rounded-xl border border-white/10 overflow-hidden bg-[#0a1612]">
                   <div style={{ ...sectionHeader, background: "rgba(251, 191, 36, 0.15)", color: "#fbbf24" }}>MF Action</div>
                   <div className="overflow-x-auto p-1">
@@ -632,7 +606,6 @@ export default function ClientReview() {
                   </div>
                 </div>
 
-                {/* SECTION 4: PROTECTION */}
                 <div className="rounded-xl border border-white/10 overflow-hidden bg-[#0a1612]">
                   <div style={{ ...sectionHeader, background: "rgba(167, 139, 250, 0.15)", color: "#a78bfa" }}>Protection</div>
                   <div className="overflow-x-auto p-1">
@@ -666,7 +639,6 @@ export default function ClientReview() {
                   </div>
                 </div>
 
-                {/* SECTION 5: GOAL PLANNING */}
                 <div className="rounded-xl border border-white/10 overflow-hidden bg-[#0a1612]">
                   <div style={{ ...sectionHeader, background: "rgba(251, 146, 60, 0.15)", color: "#fb923c" }}>Goal Planning</div>
                   <div className="overflow-x-auto p-1">
@@ -735,7 +707,6 @@ export default function ClientReview() {
           </div>
         </div>
       )}
-
     </div>
   );
 }

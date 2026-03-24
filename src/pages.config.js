@@ -48,7 +48,8 @@ import LiveTasks from './pages/LiveTasks';
 import NewTask from './pages/NewTask';
 import Reports from './pages/Reports';
 import InvestmentReport from './pages/InvestmentReport'; 
-import ClientReview from './pages/ClientReview'; // <-- Added Import
+import ClientReview from './pages/ClientReview';
+import GoalTracker from './pages/GoalTracker' // <-- Added Import
 import __Layout from './Layout.jsx';
 
 export const PAGES = {
@@ -60,7 +61,8 @@ export const PAGES = {
     "NewTask": NewTask,
     "Reports": Reports,
     "InvestmentReport": InvestmentReport,
-    "ClientReview": ClientReview, // <-- Added to PAGES object
+    "ClientReview": ClientReview,
+    "GoalTracker": GoalTracker // <-- Added to PAGES object
 }
 
 export const pagesConfig = {

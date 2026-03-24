@@ -250,8 +250,8 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
         </td>
         <td style={cellStyle}><span style={{ padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 400, background: pr.bg, color: pr.text }}>{task.priority || "—"}</span></td>
         <td style={cellStyle}>
-          <select value={editing ? editForm.status : task.status} onChange={e => { if (editing) setEditForm(f => ({ ...f, status: e.target.value })); else onStatusChange(task.id, e.target.value, task); }} style={{ padding: "4px 8px", borderRadius: 8, fontSize: 11, fontWeight: 400, background: st.bg, border: `1px solid ${st.border}`, color: st.text, cursor: "pointer" }}>
-            {ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          <select value={editing ? editForm.status : task.status} onChange={e => { if (editing) setEditForm(f => ({ ...f, status: e.target.value })); else onStatusChange(task.id, e.target.value, task); }} style={{ padding: "4px 8px", borderRadius: 8, fontSize: 11, fontWeight: 400, background: st.bg, border: `1px solid ${st.border}`, color: st.text, cursor: "pointer", outline: "none" }}>
+            {ALL_STATUSES.map(s => <option key={s} value={s} style={{background: "#0a1612"}}>{s}</option>)}
           </select>
         </td>
         <td style={cellStyle}>
@@ -426,9 +426,14 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
   );
 }
 
+// --- GLOBAL MEMORY CACHE (0 READS ON TAB SWITCH) ---
+let cachedTasks = [];
+let isListeningTasks = false;
+let taskSubs = new Set();
+
 export default function LiveTasks() {
-  const [tasks, setTasks] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [tasks, setTasks] = useState(cachedTasks);
+  const [loading, setLoading] = useState(cachedTasks.length === 0);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("active");
   const [filterPriority, setFilterPriority] = useState("all");
@@ -437,25 +442,28 @@ export default function LiveTasks() {
   const [exportYear, setExportYear] = useState("2025-26");
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetchTasks = () => {
-    setRefreshing(true);
-    const q = query(collection(db, "tasks"), orderBy("follow_up_date", "asc"));
-    return onSnapshot(q, (snapshot) => {
-      setTasks(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      setLoading(false);
-      setRefreshing(false);
-    });
-  };
-
+  // --- SMART CACHED FETCH ---
   useEffect(() => {
-    const unsubscribe = fetchTasks();
-    return () => unsubscribe();
+    taskSubs.add(setTasks);
+    if (!isListeningTasks) {
+      isListeningTasks = true;
+      const q = query(collection(db, "tasks"), orderBy("follow_up_date", "asc"));
+      onSnapshot(q, (snapshot) => {
+        cachedTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        taskSubs.forEach(cb => cb(cachedTasks));
+        setLoading(false);
+      });
+    } else {
+      setLoading(false);
+    }
+    return () => taskSubs.delete(setTasks);
   }, []);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     const qs = await getDocs(collection(db, "tasks"));
-    setTasks(qs.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    cachedTasks = qs.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    taskSubs.forEach(cb => cb(cachedTasks));
     setTimeout(() => setRefreshing(false), 500);
   };
 
