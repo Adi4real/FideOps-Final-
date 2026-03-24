@@ -85,13 +85,28 @@ function makeGCalLink(task) {
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
 }
 
+// Safely format dates to prevent crashes
+function safeFormatDate(dateStr, formatStr) {
+  if (!dateStr) return "—";
+  try {
+    const d = parseISO(dateStr);
+    if (isNaN(d)) return dateStr; 
+    return format(d, formatStr);
+  } catch (e) {
+    return dateStr;
+  }
+}
+
 function exportToExcel(allTasks, selectedYear) {
   const filteredForExport = selectedYear === "All" ? allTasks : allTasks.filter(t => t.financial_year === selectedYear);
   const headers = ["Task ID", "Financial Year", "Entry Date", "Client Code", "Client Name", "RM Assigned", "Branch", "Category", "Action", "Product Name", "Amount", "Priority", "Assigned To", "Follow-up Date", "Channel", "Status", "Closure Date", "Ageing (days)", "Notes", "Reviewer Notes"];
   const rows = filteredForExport.map(t => {
     let ageing = 0;
-    if (t.status === "Completed" && t.closure_date && t.entry_date) ageing = differenceInDays(parseISO(t.closure_date), parseISO(t.entry_date));
-    else if (t.entry_date) ageing = differenceInDays(new Date(), parseISO(t.entry_date));
+    try {
+      if (t.status === "Completed" && t.closure_date && t.entry_date) ageing = differenceInDays(parseISO(t.closure_date), parseISO(t.entry_date));
+      else if (t.entry_date) ageing = differenceInDays(new Date(), parseISO(t.entry_date));
+    } catch(e) { ageing = "N/A"; }
+    
     return [
       t.task_id, t.financial_year, t.entry_date, t.client_code, t.client_name,
       t.rm_assigned, t.branch, t.category, t.action, t.product_name,
@@ -196,9 +211,27 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
     
     const taskRef = doc(db, "tasks", task.id);
     await updateDoc(taskRef, update);
+    
+    // Only trigger the portfolio sync if it was marked as completed JUST NOW
+    if (editForm.status === "Completed" && task.status !== "Completed") {
+      onStatusChange(task.id, update.status, update); 
+    }
+
     setSaving(false);
     setEditing(false);
-    onStatusChange(task.id, update.status, update); 
+  };
+
+  // Status Change specifically for the Edit Form Dropdown
+  const handleEditStatusChange = (e) => {
+    const newStatus = e.target.value;
+    if (newStatus === "Completed") {
+      if (window.confirm("Are you sure you want to mark this task as Completed?")) {
+        setEditForm(f => ({ ...f, status: newStatus }));
+      }
+      // If they click cancel, React natively ignores the change because we didn't update state.
+    } else {
+      setEditForm(f => ({ ...f, status: newStatus }));
+    }
   };
 
   const handleRowClick = (e) => {
@@ -212,11 +245,6 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
 
   return (
     <>
-      <style>{`
-        input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-        input[type="number"] { -moz-appearance: textfield; }
-      `}</style>
-      
       <tr onClick={handleRowClick} style={{ background: rowBg, borderBottom: "1px solid rgba(255,255,255,0.04)", transition: "filter 0.15s", cursor: "pointer" }} onMouseEnter={e => e.currentTarget.style.filter = "brightness(1.25)"} onMouseLeave={e => e.currentTarget.style.filter = "brightness(1)"}>
         <td style={cellStyle}><span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: "#008254" }}>{task.task_id}</span></td>
         <td style={cellStyle}>
@@ -245,22 +273,47 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
           {editing ? (
             <input type="date" value={editForm.follow_up_date || ""} onChange={e => setEditForm(f => ({ ...f, follow_up_date: e.target.value }))} style={inputStyle} />
           ) : (
-            <span style={{ fontSize: 12, color: "#889995", fontWeight: 400 }}>{task.follow_up_date ? format(parseISO(task.follow_up_date), "dd MMM yy") : "—"}</span>
+            <span style={{ fontSize: 12, color: "#889995", fontWeight: 400 }}>{safeFormatDate(task.follow_up_date, "dd MMM yy")}</span>
           )}
         </td>
         <td style={cellStyle}><span style={{ padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 400, background: pr.bg, color: pr.text }}>{task.priority || "—"}</span></td>
         <td style={cellStyle}>
-          <select value={editing ? editForm.status : task.status} onChange={e => { if (editing) setEditForm(f => ({ ...f, status: e.target.value })); else onStatusChange(task.id, e.target.value, task); }} style={{ padding: "4px 8px", borderRadius: 8, fontSize: 11, fontWeight: 400, background: st.bg, border: `1px solid ${st.border}`, color: st.text, cursor: "pointer", outline: "none" }}>
+          <select 
+            value={editing ? editForm.status : task.status} 
+            onChange={e => { 
+              if (editing) {
+                handleEditStatusChange(e);
+              } else {
+                const newStatus = e.target.value;
+                if (newStatus === "Completed") {
+                  if (window.confirm("Are you sure you want to mark this task as Completed?")) {
+                    onStatusChange(task.id, newStatus, task);
+                  }
+                } else {
+                  onStatusChange(task.id, newStatus, task); 
+                }
+              }
+            }} 
+            style={{ padding: "4px 8px", borderRadius: 8, fontSize: 11, fontWeight: 400, background: st.bg, border: `1px solid ${st.border}`, color: st.text, cursor: "pointer", outline: "none" }}
+          >
             {ALL_STATUSES.map(s => <option key={s} value={s} style={{background: "#0a1612"}}>{s}</option>)}
           </select>
         </td>
         <td style={cellStyle}>
           {(() => {
-            let days = 0;
-            if (task.status === "Completed" && task.closure_date && task.entry_date) days = differenceInDays(parseISO(task.closure_date), parseISO(task.entry_date));
-            else if (task.entry_date) days = differenceInDays(new Date(), parseISO(task.entry_date));
-            const color = days > 14 ? "#f87171" : days > 7 ? "#fbbf24" : "#889995";
-            return <span style={{ fontSize: 12, color, fontWeight: 400 }}>{days}d</span>;
+            try {
+              let days = 0;
+              if (task.status === "Completed" && task.closure_date && task.entry_date) {
+                days = differenceInDays(parseISO(task.closure_date), parseISO(task.entry_date));
+              } else if (task.entry_date) {
+                days = differenceInDays(new Date(), parseISO(task.entry_date));
+              }
+              if (isNaN(days)) return <span style={{ fontSize: 12, color: "#889995" }}>—</span>;
+              const color = days > 14 ? "#f87171" : days > 7 ? "#fbbf24" : "#889995";
+              return <span style={{ fontSize: 12, color, fontWeight: 400 }}>{days}d</span>;
+            } catch(e) {
+              return <span style={{ fontSize: 12, color: "#889995" }}>—</span>;
+            }
           })()}
         </td>
         <td style={{ ...cellStyle, textAlign: "right" }}>
@@ -536,10 +589,15 @@ export default function LiveTasks() {
 
   const getUrgencyStatus = (task) => {
     if (!task.follow_up_date) return "upcoming";
-    const d = parseISO(task.follow_up_date);
-    if (isPast(d) && !isToday(d)) return "overdue";
-    if (isToday(d)) return "today";
-    return "upcoming";
+    try {
+      const d = parseISO(task.follow_up_date);
+      if (isNaN(d)) return "upcoming";
+      if (isPast(d) && !isToday(d)) return "overdue";
+      if (isToday(d)) return "today";
+      return "upcoming";
+    } catch(e) {
+      return "upcoming";
+    }
   };
 
   const financialYears = ["All", ...new Set(tasks.map(t => t.financial_year).filter(Boolean))].sort().reverse();
@@ -578,6 +636,10 @@ export default function LiveTasks() {
 
   return (
     <div style={{ background: "#060c0a", minHeight: "100vh", padding: "28px 24px" }}>
+      <style>{`
+        input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type="number"] { -moz-appearance: textfield; }
+      `}</style>
       <div style={{ maxWidth: 1400, margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div>

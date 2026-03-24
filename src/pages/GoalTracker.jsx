@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Search, Plus, X, Pencil, Trash2, FileSpreadsheet, CalendarClock, Users, AlertCircle, Save, Info, Target, Clock, Image as ImageIcon, Globe, Mail, Phone, Facebook, Instagram, Twitter } from "lucide-react";
+import { Search, Plus, X, Pencil, Trash2, FileSpreadsheet, CalendarClock, Users, AlertCircle, Save, Info, Target, Clock, Image as ImageIcon, Globe, Mail, Phone, Facebook, Instagram, Twitter, TrendingUp, ChevronDown, ChevronUp } from "lucide-react";
 import { format, parseISO, addYears } from "date-fns";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import html2canvas from "html2canvas";
@@ -9,8 +9,7 @@ import { db } from "../firebase";
 import { collection, query, onSnapshot, doc, updateDoc } from "firebase/firestore";
 
 const GOAL_TYPES = ["Children Marriage", "UG Education", "PG Education", "Home Purchase", "Retirement", "Wealth Creation", "Custom..."];
-const STAFF_LIST = ["Uday Pratap Singh", "Ujjwal Kumar", "Prince B Thoppil", "Joel Herbet", "Manfred"];
-const FUND_OPTIONS = ["Aditya Birla Sun Life Flexi Cap", "Axis Bluechip Fund", "Bandhan ELSS Tax Saver", "HDFC Mid Cap Opportunities", "ICICI Prudential Bluechip", "Nippon India Small Cap", "Parag Parikh Flexi Cap", "Quant Active Fund", "SBI Small Cap", "Tata Large Cap"]; // Add your full list here
+const RM_LIST = ["Ujjwal", "Manny", "Uday", "Joel", "Prince", "Ujjwal and Manny", "Ujjwal and Joel", "Uday and Joel"];
 
 // --- HELPER: Number to Words ---
 function numberToWords(num) {
@@ -59,7 +58,6 @@ export default function GoalTracker() {
     risk: "Medium", status: "Active", notes: ""
   });
 
-  const [fundSearch, setFundSearch] = useState({ index: null, text: "" });
   const [clientSearchText, setClientSearchText] = useState("");
   const [showClientDropdown, setShowClientDropdown] = useState(false);
 
@@ -242,24 +240,21 @@ export default function GoalTracker() {
     window.XLSX.writeFile(wb, "FideloWealth_Goals.xlsx");
   };
 
-  // --- BULLETPROOF IMAGE EXPORTER ---
   const handleDownloadImage = async () => {
     if (!printRef.current) return;
     setExporting(true);
     
     try {
       const element = printRef.current;
-      
       const originalWidth = element.style.width;
       const originalHeight = element.style.height;
       const originalOverflow = element.style.overflow;
       
-      // Force an exact 1050px width so all grids behave as desktop layouts
       element.style.width = '1050px'; 
       element.style.height = 'auto';
       element.style.overflow = 'visible';
 
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, 200));
 
       const canvas = await html2canvas(element, {
         backgroundColor: '#0a1110', 
@@ -286,7 +281,6 @@ export default function GoalTracker() {
     }
   };
 
-  // --- STATS ---
   const today = new Date();
   let pendingReviews = 0;
   filteredGoals.forEach(g => {
@@ -296,6 +290,10 @@ export default function GoalTracker() {
   });
 
   const liveMath = calculateMath(draft);
+
+  // Common Form Input Classes
+  const inputClass = "w-full bg-[#050a09] border border-white/10 p-3 rounded-xl text-white text-sm focus:border-[#008254] focus:ring-1 focus:ring-[#008254] transition-all outline-none placeholder-[#889995]";
+  const labelClass = "block text-[10px] font-bold text-[#889995] uppercase mb-2 tracking-wide";
 
   return (
     <div className="p-4 lg:p-8 space-y-6" style={{ background: "var(--bg-black)", minHeight: "100vh", color: "var(--text-main)" }}>
@@ -337,34 +335,65 @@ export default function GoalTracker() {
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4 items-center">
-          <div className="flex items-center bg-[var(--glass)] border border-[var(--border)] rounded-xl px-4 h-[52px]">
-            <CalendarClock size={16} className="text-[#fbbf24] mr-3 shrink-0" />
-            <label className="text-[9px] font-black text-[#fbbf24] uppercase mr-2 shrink-0">Review In</label>
-            <input type="number" placeholder="N" value={reviewYears} onChange={e => setReviewYears(e.target.value)} className="w-8 bg-transparent border-none text-[#fbbf24] font-bold outline-none" />
-            <span className="text-[9px] font-black text-[#fbbf24]">YRS</span>
+        {/* --- FIXED: FLEXBOX LAYOUT FOR SEARCH & FILTERS --- */}
+        <div className="flex flex-col xl:flex-row gap-4 items-stretch xl:items-center w-full">
+          
+          {/* Left: Main Search (Takes up remaining space) */}
+          <div className="flex-1 flex items-center bg-[var(--input-bg)] border border-[var(--border)] rounded-xl px-4 h-[52px] focus-within:border-[#008254] transition-colors shadow-inner">
+            <Search size={18} className="text-[#889995] mr-3 shrink-0" />
+            <input 
+              type="text" 
+              placeholder="Search client name or goal..." 
+              value={search} 
+              onChange={e => setSearch(e.target.value)} 
+              className="bg-transparent border-none text-white w-full outline-none text-sm placeholder-[#889995]" 
+            />
           </div>
 
-          <div className="flex items-center bg-[var(--glass)] border border-[var(--border)] rounded-xl px-4 h-[52px]">
-            <Users size={16} className="text-[#889995] mr-3 shrink-0" />
-            <select value={filterAssigned} onChange={e => setFilterAssigned(e.target.value)} className="bg-transparent border-none text-white w-full outline-none text-sm">
-              <option value="All">All Staff</option>
-              {STAFF_LIST.map(s => <option key={s} value={s} className="bg-[#0a1612]">{s}</option>)}
-            </select>
-          </div>
+          {/* Right: Filters & Actions */}
+          <div className="flex flex-col sm:flex-row gap-4 items-stretch sm:items-center shrink-0">
+            
+            {/* Review Years Filter */}
+            <div className="w-full sm:w-44 flex items-center bg-[var(--glass)] border border-[var(--border)] rounded-xl px-4 h-[52px] focus-within:border-[#fbbf24] transition-colors">
+              <CalendarClock size={16} className="text-[#fbbf24] mr-3 shrink-0" />
+              <input 
+                type="number" 
+                placeholder="Due in (Yrs)..." 
+                value={reviewYears} 
+                onChange={e => setReviewYears(e.target.value)} 
+                className="bg-transparent border-none text-[#fbbf24] font-bold text-sm w-full outline-none placeholder-[#889995]/70" 
+              />
+            </div>
 
-          <div className="flex items-center bg-[var(--input-bg)] border border-[var(--border)] rounded-xl px-4 h-[52px] xl:col-span-1.5 flex-1">
-            <Search size={16} className="text-[#889995] mr-3 shrink-0" />
-            <input type="text" placeholder="Search client name or goal..." value={search} onChange={e => setSearch(e.target.value)} className="bg-transparent border-none text-white w-full outline-none text-sm" />
-          </div>
+            {/* Staff Filter */}
+            <div className="w-full sm:w-44 flex items-center bg-[var(--glass)] border border-[var(--border)] rounded-xl px-4 h-[52px] focus-within:border-[#008254] transition-colors">
+              <Users size={16} className="text-[#889995] mr-3 shrink-0" />
+              <select 
+                value={filterAssigned} 
+                onChange={e => setFilterAssigned(e.target.value)} 
+                className="bg-transparent border-none text-white w-full outline-none text-sm font-medium cursor-pointer"
+              >
+                <option value="All">All Staff</option>
+                {RM_LIST.map(s => <option key={s} value={s} className="bg-[#0a1612]">{s}</option>)}
+              </select>
+            </div>
 
-          <div className="flex gap-3 xl:col-span-1.5 justify-end">
-            <button onClick={handleExportExcel} className="flex items-center gap-2 bg-[var(--glass)] border border-[var(--border)] hover:border-[#008254] px-6 h-[52px] rounded-xl text-sm font-bold text-white transition-all">
-              <FileSpreadsheet size={18} /> EXCEL
-            </button>
-            <button onClick={openNewForm} className="flex items-center gap-2 bg-[#008254] hover:bg-[#00a369] px-6 h-[52px] rounded-xl text-sm font-bold text-white transition-all shadow-[0_4px_15px_rgba(0,130,84,0.3)]">
-              <Plus size={18} /> NEW PLAN
-            </button>
+            {/* Action Buttons */}
+            <div className="flex gap-3 w-full sm:w-auto">
+              <button 
+                onClick={handleExportExcel} 
+                className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-[var(--glass)] border border-[var(--border)] hover:border-[#008254] px-5 h-[52px] rounded-xl text-sm font-bold text-white transition-all whitespace-nowrap"
+              >
+                <FileSpreadsheet size={18} /> EXCEL
+              </button>
+              <button 
+                onClick={openNewForm} 
+                className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-[#008254] hover:bg-[#00a369] px-6 h-[52px] rounded-xl text-sm font-bold text-white transition-all shadow-[0_4px_15px_rgba(0,130,84,0.3)] whitespace-nowrap"
+              >
+                <Plus size={18} /> NEW PLAN
+              </button>
+            </div>
+            
           </div>
         </div>
       </div>
@@ -431,37 +460,38 @@ export default function GoalTracker() {
         </div>
       </div>
 
-      {/* --- FULL SCREEN FORM OVERLAY (NON-SCROLLABLE MAIN WINDOW) --- */}
+      {/* --- RE-DESIGNED 2-COLUMN FORM OVERLAY --- */}
       {showForm && (
-        <div className="fixed inset-0 z-[100] bg-[#050a09] flex flex-col animate-in fade-in zoom-in-95 duration-200">
-          
-          {/* Header */}
-          <div className="h-20 px-8 flex justify-between items-center border-b border-white/10 shrink-0 bg-[#0a1612]">
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-xl bg-[#008254]/20 flex items-center justify-center text-[#4ade80]"><Target size={20}/></div>
-              <div>
-                <h2 className="text-lg font-black text-white uppercase tracking-widest">Goal Planning Worksheet</h2>
-                <p className="text-xs font-bold text-[#889995] mt-1">{draft.id ? "Edit existing financial goal" : "Create a new financial plan"}</p>
-              </div>
-            </div>
-            <button onClick={() => setShowForm(false)} className="w-10 h-10 flex items-center justify-center rounded-xl bg-white/5 text-white/50 hover:text-white hover:bg-white/10 transition-colors"><X size={20}/></button>
-          </div>
-          
-          {/* 3-Column Layout */}
-          <div className="flex-1 min-h-0 flex overflow-hidden">
+        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
+          <div className="w-full max-w-7xl bg-[#0a1110] border border-white/10 rounded-[24px] flex flex-col h-full max-h-[92vh] shadow-[0_20px_80px_rgba(0,0,0,0.8)] animate-in zoom-in-95 duration-300 overflow-hidden relative">
             
-            {/* COLUMN 1: Profile & Assumptions */}
-            <div className="w-[30%] border-r border-white/10 flex flex-col min-h-0 overflow-y-auto custom-scrollbar bg-[#060c0a]">
-              <div className="p-6 space-y-6">
+            {/* 2-Column Layout */}
+            <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
+              
+              {/* LEFT: FORM (Scrollable) */}
+              <div className="flex-1 lg:w-[65%] overflow-y-auto custom-scrollbar p-6 md:p-10 space-y-10 bg-[#0a1110]">
                 
-                {/* Client Box */}
-                <div className="bg-[#0a1612] border border-white/10 rounded-2xl p-5">
-                  <h3 className="text-[10px] font-black text-[#008254] uppercase tracking-widest mb-4 flex items-center gap-2"><Users size={12}/> Client Details</h3>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Client Name *</label>
+                {/* NEW TITLE PLACEMENT */}
+                <div className="flex items-center gap-5 pb-4">
+                  <div className="w-14 h-14 rounded-2xl bg-[#008254]/20 flex items-center justify-center text-[#4ade80] shrink-0">
+                    <Target size={28}/>
+                  </div>
+                  <div>
+                    <h2 className="text-3xl font-black text-white tracking-tight">Goal Planning Worksheet</h2>
+                    <p className="text-sm font-medium text-[#889995] mt-1">{draft.id ? "Edit existing financial goal" : "Configure a new financial plan"}</p>
+                  </div>
+                </div>
+                
+                {/* Section 1: Client Info */}
+                <div className="space-y-5">
+                  <h3 className="text-xs font-black text-[#008254] uppercase tracking-widest flex items-center gap-2 border-b border-white/5 pb-2">
+                    <Users size={14}/> 1. Client & Goal Details
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div className="relative">
+                      <label className={labelClass}>Client Name *</label>
                       <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#889995]" />
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#889995]" />
                         <input 
                           placeholder="Search Client..." 
                           value={clientSearchText} 
@@ -471,194 +501,216 @@ export default function GoalTracker() {
                             setShowClientDropdown(true);
                             setDraft({...draft, clientId: "", clientName: ""}); 
                           }} 
-                          className="w-full bg-[#050a09] border border-white/10 py-2.5 pl-9 pr-3 rounded-lg text-white text-xs focus:border-[#008254] outline-none" 
+                          className={`${inputClass} pl-10`}
                           required 
                         />
                         {showClientDropdown && clientSearchText && (
-                          <div 
-                            className="absolute top-[100%] left-0 right-0 bg-[#0a1612] border border-[#008254] rounded-xl mt-1 z-50 max-h-[200px] overflow-y-auto shadow-2xl custom-scrollbar" 
-                            onMouseLeave={() => setShowClientDropdown(false)}
-                          >
+                          <div className="absolute top-[100%] left-0 right-0 bg-[#0a1612] border border-[#008254] rounded-xl mt-2 z-50 max-h-[250px] overflow-y-auto shadow-2xl custom-scrollbar" onMouseLeave={() => setShowClientDropdown(false)}>
                             {clients.filter(c => c.client_name?.toLowerCase().includes(clientSearchText.toLowerCase())).map(c => (
-                              <div 
-                                key={c.id} 
-                                onClick={() => {
-                                  setClientSearchText(c.client_name);
-                                  setDraft({...draft, clientId: c.id, clientName: c.client_name, assigned: c.rm_assigned ? [c.rm_assigned] : [] });
-                                  setShowClientDropdown(false);
-                                }} 
-                                className="p-3 text-xs text-white hover:bg-[#008254] cursor-pointer border-b border-white/10"
-                              >
-                                {c.client_name} {c.client_code ? <span className="text-[#4ade80] ml-1">({c.client_code})</span> : ""}
+                              <div key={c.id} onClick={() => { setClientSearchText(c.client_name); setDraft({...draft, clientId: c.id, clientName: c.client_name, assigned: c.rm_assigned ? [c.rm_assigned] : [] }); setShowClientDropdown(false); }} className="p-3 text-sm font-medium text-white hover:bg-[#008254] cursor-pointer border-b border-white/5">
+                                {c.client_name} {c.client_code ? <span className="text-xs text-[#4ade80] ml-2 font-bold">({c.client_code})</span> : ""}
                               </div>
                             ))}
-                            {clients.filter(c => c.client_name?.toLowerCase().includes(clientSearchText.toLowerCase())).length === 0 && (
-                              <div className="p-3 text-xs text-[#889995] italic">No clients found.</div>
-                            )}
                           </div>
                         )}
                       </div>
                     </div>
                     <div>
-                      <label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Plan Date</label>
-                      <input type="date" value={draft.date} onChange={e => setDraft({...draft, date: e.target.value})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-[#fbbf24] text-xs focus:border-[#008254] outline-none" required />
+                      <label className={labelClass}>Plan Date</label>
+                      <input type="date" value={draft.date} onChange={e => setDraft({...draft, date: e.target.value})} className={inputClass} required />
                     </div>
                     <div>
-                      <label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Goal Type</label>
-                      <select value={draft.goalType} onChange={e => setDraft({...draft, goalType: e.target.value})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs focus:border-[#008254] outline-none">
+                      <label className={labelClass}>Goal Type</label>
+                      <select value={draft.goalType} onChange={e => setDraft({...draft, goalType: e.target.value})} className={inputClass}>
                         {GOAL_TYPES.map(g => <option key={g} value={g}>{g}</option>)}
                       </select>
                       {draft.goalType === "Custom..." && (
-                        <input placeholder="Specify custom goal..." value={draft.customGoal} onChange={e => setDraft({...draft, customGoal: e.target.value})} className="w-full bg-[#050a09] border border-[#fbbf24]/50 p-2.5 rounded-lg text-white text-xs outline-none mt-2" required />
+                        <input placeholder="Specify custom goal..." value={draft.customGoal} onChange={e => setDraft({...draft, customGoal: e.target.value})} className={`${inputClass} mt-3 border-[#fbbf24]/50`} required />
                       )}
                     </div>
                   </div>
                 </div>
 
-                {/* Assumptions Box */}
-                <div className="bg-[#0a1612] border border-white/10 rounded-2xl p-5">
-                  <h3 className="text-[10px] font-black text-[#008254] uppercase tracking-widest mb-4 flex items-center gap-2"><Target size={12}/> Math Assumptions</h3>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="col-span-2"><label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Present Cost (₹)</label><input type="number" value={draft.pv} onChange={e => setDraft({...draft, pv: e.target.value})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs outline-none" required /></div>
-                    <div><label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Term (Yrs)</label><input type="number" value={draft.years} onChange={e => setDraft({...draft, years: e.target.value})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs outline-none" required /></div>
-                    <div><label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Review In (Yrs)</label><input type="number" value={draft.reviewN} onChange={e => setDraft({...draft, reviewN: e.target.value})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs outline-none" required /></div>
-                    <div><label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Inflation (%)</label><input type="number" value={draft.inf} onChange={e => setDraft({...draft, inf: e.target.value})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs outline-none" required /></div>
-                    <div><label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Growth (%)</label><input type="number" value={draft.growth} onChange={e => setDraft({...draft, growth: e.target.value})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs outline-none" required /></div>
-                  </div>
-                </div>
-
-                {/* Finalization Box */}
-                <div className="bg-[#0a1612] border border-white/10 rounded-2xl p-5">
-                  <h3 className="text-[10px] font-black text-[#008254] uppercase tracking-widest mb-4 flex items-center gap-2"><Info size={12}/> Settings</h3>
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div><label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Risk Appetite</label><select value={draft.risk} onChange={e => setDraft({...draft, risk: e.target.value})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs outline-none"><option value="Low">Low Risk</option><option value="Medium">Medium Risk</option><option value="High">High Risk</option></select></div>
-                      <div><label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Status</label><select value={draft.status} onChange={e => setDraft({...draft, status: e.target.value})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs outline-none"><option value="Active">Active</option><option value="Under-Review">Under Review</option><option value="Paused">Paused</option><option value="Completed">Completed</option></select></div>
+                {/* Section 2: Assumptions */}
+                <div className="space-y-5">
+                  <h3 className="text-xs font-black text-[#008254] uppercase tracking-widest flex items-center gap-2 border-b border-white/5 pb-2">
+                    <Target size={14}/> 2. Financial Assumptions
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
+                    <div className="col-span-2">
+                      <label className={labelClass}>Present Cost (₹)</label>
+                      <input type="number" value={draft.pv} onChange={e => setDraft({...draft, pv: e.target.value})} className={inputClass} required />
                     </div>
                     <div>
-                      <label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Assigned Staff</label>
-                      <select multiple value={draft.assigned} onChange={e => setDraft({...draft, assigned: Array.from(e.target.selectedOptions, o => o.value)})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs outline-none h-[60px] custom-scrollbar">
-                        {STAFF_LIST.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
+                      <label className={labelClass}>Term (Yrs)</label>
+                      <input type="number" value={draft.years} onChange={e => setDraft({...draft, years: e.target.value})} className={inputClass} required />
                     </div>
-                    <div><label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Admin Notes</label><textarea placeholder="Optional remarks..." value={draft.notes} onChange={e => setDraft({...draft, notes: e.target.value})} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs outline-none h-[60px] resize-none" /></div>
+                    <div>
+                      <label className={labelClass}>Review In (Yrs)</label>
+                      <input type="number" value={draft.reviewN} onChange={e => setDraft({...draft, reviewN: e.target.value})} className={inputClass} required />
+                    </div>
+                    <div>
+                      <label className={labelClass}>Inflation (%)</label>
+                      <input type="number" value={draft.inf} onChange={e => setDraft({...draft, inf: e.target.value})} className={inputClass} required />
+                    </div>
+                    <div>
+                      <label className={labelClass}>Growth (%)</label>
+                      <input type="number" value={draft.growth} onChange={e => setDraft({...draft, growth: e.target.value})} className={inputClass} required />
+                    </div>
                   </div>
                 </div>
 
-              </div>
-            </div>
+                {/* Section 3: Deployment Strategy */}
+                <div className="space-y-5">
+                  <h3 className="text-xs font-black text-[#008254] uppercase tracking-widest flex items-center gap-2 border-b border-white/5 pb-2">
+                    <TrendingUp size={14}/> 3. Deployment Strategy
+                  </h3>
+                  
+                  <div className="w-full md:w-1/2">
+                    <label className={labelClass}>Investment Mode</label>
+                    <select value={draft.strategyType} onChange={e => handleStrategyChange(e.target.value)} className={`${inputClass} border-[#008254]/50`}>
+                      <option value="SIP">Monthly SIP Only</option>
+                      <option value="LS">Lump Sum Only</option>
+                      <option value="SIP_LS">SIP + Lump Sum Hybrid</option>
+                    </select>
+                  </div>
 
-            {/* COLUMN 2: Sub-Investments */}
-            <div className="w-[40%] border-r border-white/10 flex flex-col bg-[#0a1612]">
-              <div className="p-6 border-b border-white/10 bg-[#060c0a] shrink-0">
-                <h3 className="text-sm font-black text-[#008254] uppercase tracking-widest mb-1 flex items-center gap-2"> Deployment Strategy</h3>
-                <p className="text-[10px] font-bold text-[#889995]">Configure the sub-investments driving this goal.</p>
-                
-                {/* STRATEGY DROPDOWN */}
-                <div className="mt-4 bg-[#008254]/10 border border-[#008254]/30 p-3 rounded-xl flex items-center gap-4">
-                  <label className="text-[10px] font-black text-[#4ade80] uppercase tracking-wider shrink-0">Investment Mode</label>
-                  <select 
-                    value={draft.strategyType} 
-                    onChange={e => handleStrategyChange(e.target.value)} 
-                    className="flex-1 bg-[#050a09] border border-white/10 p-2 rounded-lg text-white text-xs font-bold outline-none cursor-pointer"
-                  >
-                    <option value="SIP">Monthly SIP Only</option>
-                    <option value="LS">Lump Sum Only</option>
-                    <option value="SIP_LS">SIP + Lump Sum Hybrid</option>
-                  </select>
-                </div>
-              </div>
-              
-              {/* Dynamic Investment Rows */}
-              <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-4 custom-scrollbar">
-                {draft.investments.map((inv, i) => (
-                  <div key={i} className="bg-[#050a09] border border-white/10 p-4 rounded-2xl flex flex-col gap-3 relative group hover:border-white/20 transition-colors">
-                    
-                    <div className="flex items-center gap-3">
-                      <select 
-                        value={inv.type} 
-                        disabled={draft.strategyType !== "SIP_LS"} 
-                        onChange={e => { const n = [...draft.investments]; n[i].type = e.target.value; setDraft({...draft, investments: n}); }} 
-                        className="bg-[#0a1612] border border-white/10 p-2.5 rounded-lg text-white text-xs font-bold outline-none w-[100px] shrink-0 disabled:opacity-50"
-                      >
-                        <option value="SIP">SIP</option><option value="LS">Lump Sum</option>
-                      </select>
-                      
-                      <div className="flex-1 relative">
-                        <input type="number" placeholder="Amount (₹)" value={inv.amount || ""} onChange={e => { const n = [...draft.investments]; n[i].amount = e.target.value; setDraft({...draft, investments: n}); }} className="w-full bg-[#0a1612] border border-white/10 p-2.5 rounded-lg text-white text-xs outline-none" />
-                        {inv.amount && <p className="text-[8px] text-[#4ade80] mt-1 ml-1 italic font-bold absolute">{numberToWords(inv.amount)}</p>}
-                      </div>
-
-                      <button type="button" onClick={() => { const n = draft.investments.filter((_, idx) => idx !== i); setDraft({...draft, investments: n}); }} disabled={draft.investments.length === 1} className="w-9 h-9 flex items-center justify-center rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-10 shrink-0 border border-red-500/20 transition-all"><X size={14}/></button>
-                    </div>
-                    
-                    <div className="relative mt-1">
-                      <input placeholder="Search Fund / Scheme Name..." value={inv.fund || ""} onFocus={() => setFundSearch({ index: i, text: inv.fund || "" })} onChange={e => {
-                        const val = e.target.value;
-                        const n = [...draft.investments]; n[i].fund = val; setDraft({...draft, investments: n});
-                        setFundSearch({ index: i, text: val });
-                      }} className="w-full bg-[#0a1612] border border-[#008254]/50 p-2.5 rounded-lg text-white text-xs outline-none font-semibold" />
-                      
-                      {fundSearch.index === i && (
-                        <div className="absolute top-[100%] left-0 right-0 bg-[#0a1612] border border-[#008254] rounded-xl mt-1 z-10 max-h-[160px] overflow-y-auto shadow-2xl custom-scrollbar" onMouseLeave={() => setFundSearch({index: null, text: ""})}>
-                          {FUND_OPTIONS.filter(f => f.toLowerCase().includes(fundSearch.text.toLowerCase())).map(f => (
-                            <div key={f} onClick={() => {
-                              const n = [...draft.investments]; n[i].fund = f; setDraft({...draft, investments: n});
-                              setFundSearch({index: null, text: ""});
-                            }} className="p-3 text-xs text-white hover:bg-[#008254] cursor-pointer border-b border-white/10">{f}</div>
-                          ))}
+                  {/* Sub-Investments Rows */}
+                  <div className="space-y-3 pt-2">
+                    {draft.investments.map((inv, i) => (
+                      <div key={i} className="flex items-center gap-3 bg-[#050a09] border border-white/5 p-2 rounded-2xl group hover:border-white/20 transition-all">
+                        <select 
+                          value={inv.type} 
+                          disabled={draft.strategyType !== "SIP_LS"} 
+                          onChange={e => { const n = [...draft.investments]; n[i].type = e.target.value; setDraft({...draft, investments: n}); }} 
+                          className="w-[90px] shrink-0 bg-[#0a1612] border border-white/10 p-3 rounded-xl text-white text-xs font-bold focus:border-[#008254] outline-none disabled:opacity-50"
+                        >
+                          <option value="SIP">SIP</option>
+                          <option value="LS">Lump Sum</option>
+                        </select>
+                        
+                        <input 
+                          placeholder="Fund / Scheme Name" 
+                          value={inv.fund || ""} 
+                          onChange={e => { const n = [...draft.investments]; n[i].fund = e.target.value; setDraft({...draft, investments: n}); }} 
+                          className="flex-1 bg-[#0a1612] border border-white/10 p-3 rounded-xl text-white text-sm focus:border-[#008254] outline-none transition-colors" 
+                        />
+                        
+                        <div className="relative w-[160px] shrink-0">
+                          <input 
+                            type="number" 
+                            placeholder="Amount (₹)" 
+                            value={inv.amount || ""} 
+                            onChange={e => { const n = [...draft.investments]; n[i].amount = e.target.value; setDraft({...draft, investments: n}); }} 
+                            className="w-full bg-[#0a1612] border border-white/10 p-3 rounded-xl text-white text-sm focus:border-[#008254] outline-none" 
+                          />
+                          {inv.amount && <p className="text-[9px] text-[#4ade80] mt-1 ml-1 italic font-bold absolute">{numberToWords(inv.amount)}</p>}
                         </div>
-                      )}
+
+                        <button 
+                          type="button" 
+                          onClick={() => { const n = draft.investments.filter((_, idx) => idx !== i); setDraft({...draft, investments: n}); }} 
+                          disabled={draft.investments.length === 1} 
+                          className="w-11 h-11 flex items-center justify-center rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-10 shrink-0 transition-all"
+                        >
+                          <X size={16}/>
+                        </button>
+                      </div>
+                    ))}
+                    
+                    <button type="button" onClick={() => setDraft({...draft, investments: [...draft.investments, {type: draft.strategyType === "LS" ? "LS" : "SIP", amount: 0, fund: ""}]})} className="flex items-center gap-1.5 text-xs font-black text-[#008254] hover:text-[#4ade80] py-2 transition-colors uppercase tracking-wider">
+                      <Plus size={14}/> Add Another Fund
+                    </button>
+                  </div>
+                </div>
+
+                {/* Section 4: Settings */}
+                <div className="space-y-5 pb-10">
+                  <h3 className="text-xs font-black text-[#008254] uppercase tracking-widest flex items-center gap-2 border-b border-white/5 pb-2">
+                    <Info size={14}/> 4. Plan Settings
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div>
+                      <label className={labelClass}>Risk Appetite</label>
+                      <select value={draft.risk} onChange={e => setDraft({...draft, risk: e.target.value})} className={inputClass}>
+                        <option value="Low">Low Risk</option>
+                        <option value="Medium">Medium Risk</option>
+                        <option value="High">High Risk</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Status</label>
+                      <select value={draft.status} onChange={e => setDraft({...draft, status: e.target.value})} className={inputClass}>
+                        <option value="Active">Active</option>
+                        <option value="Under-Review">Under Review</option>
+                        <option value="Paused">Paused</option>
+                        <option value="Completed">Completed</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Assigned Staff</label>
+                      <select value={draft.assigned[0] || ""} onChange={e => setDraft({...draft, assigned: [e.target.value]})} className={inputClass}>
+                        <option value="">Select RM...</option>
+                        {RM_LIST.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Admin Notes</label>
+                      <textarea placeholder="Optional remarks..." value={draft.notes} onChange={e => setDraft({...draft, notes: e.target.value})} className={`${inputClass} resize-none h-[46px]`} />
                     </div>
                   </div>
-                ))}
+                </div>
+
+              </div>
+
+              {/* RIGHT: SUMMARY (Fixed/Sticky Sidebar) */}
+              <div className="w-full lg:w-[35%] bg-[#060c0a] border-l border-white/5 flex flex-col shrink-0">
                 
-                <button type="button" onClick={() => setDraft({...draft, investments: [...draft.investments, {type: draft.strategyType === "LS" ? "LS" : "SIP", amount: 0, fund: ""}]})} className="flex items-center gap-1 text-xs font-black text-[#008254] hover:text-[#4ade80] py-2 transition-colors uppercase tracking-wider">
-                  <Plus size={14}/> Add Another Fund
-                </button>
-              </div>
-            </div>
+                {/* Right Side Header (Holds Close Button) */}
+                <div className="h-24 px-8 flex items-center justify-between border-b border-white/5 shrink-0">
+                  <h3 className="text-sm font-black text-[#889995] uppercase tracking-widest">Live Gap Analysis</h3>
+                  <button onClick={() => setShowForm(false)} className="w-10 h-10 flex items-center justify-center rounded-xl bg-white/5 text-white/50 hover:text-white hover:bg-white/10 transition-colors">
+                    <X size={20}/>
+                  </button>
+                </div>
 
-            {/* COLUMN 3: Gap Analysis & Live Summary */}
-            <div className="w-[30%] flex flex-col bg-[#060c0a] justify-between">
-              
-              <div className="p-6 space-y-6 overflow-y-auto custom-scrollbar">
-                <div>
-                  <h3 className="text-[10px] font-black text-[#fbbf24] uppercase tracking-widest mb-3">Standalone Required (100%)</h3>
-                  <div className="bg-[var(--glass)] border border-[#fbbf24]/50 p-5 rounded-2xl flex justify-between shadow-[inset_0_0_20px_rgba(251,191,36,0.05)]">
-                    <div><label className="text-[8px] font-bold text-[#889995] uppercase block mb-1">SIP Only Path</label><div className="text-xl font-black text-white">₹{Math.round(liveMath.reqSIP).toLocaleString('en-IN')}</div></div>
-                    <div className="text-right"><label className="text-[8px] font-bold text-[#889995] uppercase block mb-1">Lump Sum Only Path</label><div className="text-xl font-black text-white">₹{Math.round(liveMath.reqLS).toLocaleString('en-IN')}</div></div>
+                <div className="p-8 flex-1 overflow-y-auto custom-scrollbar space-y-8">
+                  <div>
+                    <h4 className="text-[10px] font-black text-[#fbbf24] uppercase tracking-widest mb-3">Standalone Required (100%)</h4>
+                    <div className="bg-white/5 border border-[#fbbf24]/30 p-5 rounded-2xl flex justify-between shadow-[inset_0_0_20px_rgba(251,191,36,0.02)]">
+                      <div><label className="text-[9px] font-bold text-[#889995] uppercase block mb-1">SIP Only Path</label><div className="text-xl font-black text-white">₹{Math.round(liveMath.reqSIP).toLocaleString('en-IN')}</div></div>
+                      <div className="text-right"><label className="text-[9px] font-bold text-[#889995] uppercase block mb-1">Lump Sum Only</label><div className="text-xl font-black text-white">₹{Math.round(liveMath.reqLS).toLocaleString('en-IN')}</div></div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-[10px] font-black text-[#4ade80] uppercase tracking-widest mb-3">Remaining Deficit Coverage</h4>
+                    <div className="bg-[#008254]/10 border border-[#008254]/50 p-5 rounded-2xl flex justify-between gap-4 shadow-[inset_0_0_20px_rgba(0,130,84,0.05)]">
+                      <div className="flex-1"><label className="text-[9px] font-bold text-[#889995] uppercase block mb-2">Addl. SIP</label><div className="text-sm font-bold text-[#4ade80] bg-[#008254]/20 p-3 rounded-xl text-center">₹{Math.round(liveMath.deficitSip).toLocaleString('en-IN')}</div></div>
+                      <div className="flex-1"><label className="text-[9px] font-bold text-[#889995] uppercase block mb-2">Addl. LS</label><div className="text-sm font-bold text-[#4ade80] bg-[#008254]/20 p-3 rounded-xl text-center">₹{Math.round(liveMath.deficitLs).toLocaleString('en-IN')}</div></div>
+                    </div>
+                  </div>
+
+                  <div className="bg-[#0a1612] border border-white/10 p-6 rounded-2xl space-y-4 shadow-xl">
+                    <div className="flex justify-between border-b border-white/5 pb-3 text-sm font-medium"><span>Future Goal Value:</span> <strong className="text-white">₹{Math.round(liveMath.goalFV).toLocaleString('en-IN')}</strong></div>
+                    <div className="flex justify-between border-b border-white/5 pb-3 text-sm font-medium"><span>Target Date:</span> <strong className="text-white">{format(addYears(parseISO(draft.date), Number(draft.years) || 0), "MMM yyyy")}</strong></div>
+                    <div className="flex justify-between border-b border-white/5 pb-3 text-sm font-medium"><span>Projected Maturity:</span> <strong className="text-[#4ade80]">₹{Math.round(liveMath.projectedMaturity).toLocaleString('en-IN')}</strong></div>
+                    <div className="flex justify-between pt-2 text-base font-black"><span>Funding Gap:</span> <span className={liveMath.gap <= 0 ? "text-[#4ade80]" : "text-[#f87171]"}>₹{Math.round(Math.max(0, liveMath.gap)).toLocaleString('en-IN')}</span></div>
                   </div>
                 </div>
 
-                <div>
-                  <h3 className="text-[10px] font-black text-[#4ade80] uppercase tracking-widest mb-3">Remaining Deficit Coverage</h3>
-                  <div className="bg-[var(--glass)] border border-[#008254] p-5 rounded-2xl flex justify-between gap-4 shadow-[inset_0_0_20px_rgba(0,130,84,0.1)]">
-                    <div className="flex-1"><label className="text-[8px] font-bold text-[#889995] uppercase block mb-1">Addl. SIP</label><div className="text-sm font-bold text-[#4ade80] bg-[#008254]/20 p-2.5 rounded-lg text-center">₹{Math.round(liveMath.deficitSip).toLocaleString('en-IN')}</div></div>
-                    <div className="flex-1"><label className="text-[8px] font-bold text-[#889995] uppercase block mb-1">Addl. LS</label><div className="text-sm font-bold text-[#4ade80] bg-[#008254]/20 p-2.5 rounded-lg text-center">₹{Math.round(liveMath.deficitLs).toLocaleString('en-IN')}</div></div>
-                  </div>
+                {/* Action Buttons Footer */}
+                <div className="p-6 border-t border-white/5 bg-[#050a09] shrink-0 flex flex-col gap-3">
+                  <button onClick={handleSaveGoal} className="w-full py-4 rounded-xl font-black bg-[#008254] text-white hover:bg-[#00a369] transition-all shadow-[0_10px_20px_rgba(0,130,84,0.2)] hover:shadow-[0_10px_25px_rgba(0,130,84,0.4)] tracking-wide">
+                    SAVE GOAL PLAN
+                  </button>
+                  <button type="button" onClick={() => setShowForm(false)} className="w-full py-3.5 rounded-xl font-bold text-[#889995] border border-white/10 hover:text-white hover:border-white/30 hover:bg-white/5 transition-all tracking-wide">
+                    CANCEL & DISCARD
+                  </button>
                 </div>
 
-                <div className="bg-[#002d20] border border-[#008254] p-5 rounded-2xl space-y-3">
-                  <div className="flex justify-between border-b border-white/10 pb-2 text-xs font-semibold"><span>Future Goal Value:</span> <strong className="text-white">₹{Math.round(liveMath.goalFV).toLocaleString('en-IN')}</strong></div>
-                  <div className="flex justify-between border-b border-white/10 pb-2 text-xs font-semibold"><span>Target Date:</span> <strong className="text-white">{format(addYears(parseISO(draft.date), Number(draft.years) || 0), "MMM yyyy")}</strong></div>
-                  <div className="flex justify-between border-b border-white/10 pb-2 text-xs font-semibold"><span>Projected Maturity:</span> <strong className="text-[#4ade80]">₹{Math.round(liveMath.projectedMaturity).toLocaleString('en-IN')}</strong></div>
-                  <div className="flex justify-between pt-1 text-sm font-black"><span>Funding Gap:</span> <span className={liveMath.gap <= 0 ? "text-[#4ade80]" : "text-[#f87171]"}>₹{Math.round(Math.max(0, liveMath.gap)).toLocaleString('en-IN')}</span></div>
-                </div>
               </div>
-
-              {/* Action Buttons Footer */}
-              <div className="p-6 border-t border-white/10 bg-[#0a1612] shrink-0 flex flex-col gap-3">
-                <button onClick={handleSaveGoal} className="w-full py-4 rounded-xl font-black bg-[#008254] text-white hover:bg-[#00a369] transition-all shadow-[0_10px_20px_rgba(0,130,84,0.3)] hover:shadow-[0_10px_25px_rgba(0,130,84,0.5)]">
-                  SAVE GOAL PLAN
-                </button>
-                <button type="button" onClick={() => setShowForm(false)} className="w-full py-3 rounded-xl font-bold text-[#889995] border border-white/10 hover:text-white hover:border-white/30 hover:bg-white/5 transition-all">
-                  CANCEL & DISCARD
-                </button>
-              </div>
-
             </div>
-
           </div>
         </div>
       )}
@@ -690,36 +742,36 @@ export default function GoalTracker() {
                   
                   {/* --- EXPORT HEADER (Logo & Title) --- */}
                   <div className="flex justify-between items-center border-b border-white/10 pb-6 mb-8">
-                    <img src="/FW_1_logo_2.png" alt="FideloWealth" className="h-10 object-contain" />
+                    <img src="/FW_1_logo.png" alt="FideloWealth" className="h-10 object-contain" />
                     <div className="text-right">
                       <h2 className="text-2xl font-black text-[#008254] tracking-wide uppercase">{activeGoal.clientName}</h2>
                       <p className="text-[10px] font-black text-[#889995] uppercase tracking-[2px] mt-1">{activeGoal.goalType}</p>
                     </div>
                   </div>
 
-                  {/* FIXED: Hardcoded explicit grid layout to prevent html2canvas squishing */}
-                  <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: "40px", alignItems: "start" }}>
+                  {/* STRICT FLEX LAYOUT FOR HTML2CANVAS */}
+                  <div style={{ display: "flex", gap: "40px", alignItems: "flex-start", width: "100%" }}>
                     
-                    <div className="space-y-8">
+                    <div style={{ flex: "1.2", display: "flex", flexDirection: "column", gap: "32px", minWidth: 0 }}>
                       <div>
                         <h3 className="text-[11px] font-black text-[#008254] uppercase tracking-[1px] border-b border-white/10 pb-2 mb-4">Financial Snapshot</h3>
-                        {/* FIXED: Explicit sub-grid to prevent wrapping in html2canvas */}
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "24px" }} className="bg-white/5 border border-white/10 rounded-2xl p-6">
-                          <div><label className="text-[9px] font-black text-[#889995] uppercase">PRESENT COST</label><div className="text-xl font-bold text-white mt-1">₹{Number(activeGoal.pv).toLocaleString('en-IN')}</div></div>
-                          <div><label className="text-[9px] font-black text-[#889995] uppercase">FUTURE GOAL</label><div className="text-xl font-black text-[#fbbf24] mt-1">₹{Math.round(pMath.goalFV).toLocaleString('en-IN')}</div></div>
-                          <div><label className="text-[9px] font-black text-[#889995] uppercase">TARGET DATE</label><div className="text-xl font-bold text-white mt-1">{format(addYears(parseISO(activeGoal.date), Number(activeGoal.years) || 0), "MMM yyyy")}</div></div>
-                          <div><label className="text-[9px] font-black text-[#889995] uppercase">TIME HORIZON</label><div className="text-xl font-bold text-white mt-1">{activeGoal.years} Years</div></div>
-                          <div><label className="text-[9px] font-black text-[#889995] uppercase">INF. RATE</label><div className="text-xl font-bold text-white mt-1">{activeGoal.inf}%</div></div>
-                          <div><label className="text-[9px] font-black text-[#889995] uppercase">EXP. GROWTH</label><div className="text-xl font-bold text-white mt-1">{activeGoal.growth}%</div></div>
+                        
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: "24px" }} className="bg-white/5 border border-white/10 rounded-2xl p-6">
+                          <div style={{ width: "calc(50% - 12px)" }}><label className="text-[9px] font-black text-[#889995] uppercase">PRESENT COST</label><div className="text-xl font-bold text-white mt-1">₹{Number(activeGoal.pv).toLocaleString('en-IN')}</div></div>
+                          <div style={{ width: "calc(50% - 12px)" }}><label className="text-[9px] font-black text-[#889995] uppercase">FUTURE GOAL</label><div className="text-xl font-black text-[#fbbf24] mt-1">₹{Math.round(pMath.goalFV).toLocaleString('en-IN')}</div></div>
+                          <div style={{ width: "calc(50% - 12px)" }}><label className="text-[9px] font-black text-[#889995] uppercase">TARGET DATE</label><div className="text-xl font-bold text-white mt-1">{format(addYears(parseISO(activeGoal.date), Number(activeGoal.years) || 0), "MMM yyyy")}</div></div>
+                          <div style={{ width: "calc(50% - 12px)" }}><label className="text-[9px] font-black text-[#889995] uppercase">TIME HORIZON</label><div className="text-xl font-bold text-white mt-1">{activeGoal.years} Years</div></div>
+                          <div style={{ width: "calc(50% - 12px)" }}><label className="text-[9px] font-black text-[#889995] uppercase">INF. RATE</label><div className="text-xl font-bold text-white mt-1">{activeGoal.inf}%</div></div>
+                          <div style={{ width: "calc(50% - 12px)" }}><label className="text-[9px] font-black text-[#889995] uppercase">EXP. GROWTH</label><div className="text-xl font-bold text-white mt-1">{activeGoal.growth}%</div></div>
                         </div>
                       </div>
 
                       <div>
                         <h3 className="text-[11px] font-black text-[#008254] uppercase tracking-[1px] border-b border-white/10 pb-2 mb-4">Deployment Strategy</h3>
                         <div className="bg-[var(--glass)] border border-white/10 rounded-2xl p-6">
-                          <div className="flex justify-between mb-6">
-                            <div className="flex-1"><label className="text-[9px] font-black text-[#889995] uppercase">ACTUAL INVESTED MATURITY</label><div className="text-2xl font-black text-white mt-1">₹{Math.round(pMath.projectedMaturity).toLocaleString('en-IN')}</div></div>
-                            <div className="flex-1"><label className="text-[9px] font-black text-[#889995] uppercase">FUNDING GAP</label><div className="text-2xl font-black text-[#f87171] mt-1">₹{Math.round(Math.max(0, pMath.gap)).toLocaleString('en-IN')}</div></div>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "24px" }}>
+                            <div style={{ flex: 1 }}><label className="text-[9px] font-black text-[#889995] uppercase">ACTUAL INVESTED MATURITY</label><div className="text-2xl font-black text-white mt-1">₹{Math.round(pMath.projectedMaturity).toLocaleString('en-IN')}</div></div>
+                            <div style={{ flex: 1 }}><label className="text-[9px] font-black text-[#889995] uppercase">FUNDING GAP</label><div className="text-2xl font-black text-[#f87171] mt-1">₹{Math.round(Math.max(0, pMath.gap)).toLocaleString('en-IN')}</div></div>
                           </div>
                           
                           <div className="mt-4 border-t border-white/10 pt-4">
@@ -740,43 +792,43 @@ export default function GoalTracker() {
                       </div>
                     </div>
 
-                    <div className="flex flex-col items-center justify-center bg-[var(--glass)] border border-[var(--border)] rounded-3xl p-8 h-fit">
-                      <div style={{ width: "280px", height: "280px" }} className="relative">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                            <Pie data={chartData} cx="50%" cy="50%" innerRadius={95} outerRadius={135} dataKey="value" stroke="none" paddingAngle={2} isAnimationActive={false}>
-                              {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                            </Pie>
-                            <Tooltip contentStyle={{ background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, color: "white" }} itemStyle={{ color: "white", fontWeight: "bold" }} formatter={(val) => `₹${val.toLocaleString('en-IN')}`} />
-                          </PieChart>
-                        </ResponsiveContainer>
-                        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                    <div style={{ flex: "0.8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "var(--glass)", border: "1px solid var(--border)", borderRadius: "24px", padding: "32px", minWidth: 0 }}>
+                      <div style={{ width: "280px", height: "280px", position: "relative" }}>
+                        
+                        {/* STRICT SIZE CHART FOR EXPORT */}
+                        <PieChart width={280} height={280}>
+                          <Pie data={chartData} cx="50%" cy="50%" innerRadius={95} outerRadius={135} dataKey="value" stroke="none" paddingAngle={2} isAnimationActive={false}>
+                            {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                          </Pie>
+                        </PieChart>
+                        
+                        <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                           <span className="text-4xl font-black text-[#4ade80] drop-shadow-[0_0_10px_rgba(74,222,128,0.4)]">{pct}%</span>
                           <span className="text-[10px] font-black text-[#889995] uppercase tracking-widest mt-1">Coverage</span>
                         </div>
                       </div>
 
-                      <div className="flex gap-6 mt-6 text-[10px] font-bold text-[#889995] uppercase tracking-wider">
-                        <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-[#008254]"></div> SIP</div>
-                        <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-[#4ade80]"></div> LS</div>
-                        <div className="flex items-center gap-2"><div className="w-3 h-3 rounded border border-white/20 bg-transparent"></div> GAP</div>
+                      <div style={{ display: "flex", gap: "24px", marginTop: "24px", fontSize: "10px", fontWeight: "bold", color: "#889995", textTransform: "uppercase", letterSpacing: "1px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}><div style={{ width: "12px", height: "12px", borderRadius: "4px", background: "#008254" }}></div> SIP</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}><div style={{ width: "12px", height: "12px", borderRadius: "4px", background: "#4ade80" }}></div> LS</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}><div style={{ width: "12px", height: "12px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.2)", background: "transparent" }}></div> GAP</div>
                       </div>
                     </div>
                   </div>
 
                   {/* --- EXPORT FOOTER (Socials & Disclaimer) --- */}
                   <div className="mt-12 pt-6 border-t border-white/10">
-                    <div className="flex flex-wrap items-center justify-center gap-6 mb-6 text-[#c8d4d0] text-xs font-semibold">
-                      <div className="flex items-center gap-2">
-                        {/* FIXED: Brand Colors applied to social icons */}
+                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "24px", marginBottom: "24px", color: "#c8d4d0", fontSize: "11px", fontWeight: 600 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                        {/* Branded Social Icons matching reference exactly */}
                         <div className="bg-[#1877F2]/15 text-[#1877F2] p-1.5 rounded-full"><Facebook size={14}/></div>
                         <div className="bg-[#E1306C]/15 text-[#E1306C] p-1.5 rounded-full"><Instagram size={14}/></div>
                         <div className="bg-[#1DA1F2]/15 text-[#1DA1F2] p-1.5 rounded-full"><Twitter size={14}/></div>
-                        <span className="ml-1">fidelowealth</span>
+                        <span style={{ marginLeft: "4px" }}>fidelowealth</span>
                       </div>
-                      <div className="flex items-center gap-2"><div className="bg-[#60a5fa]/15 text-[#60a5fa] p-1.5 rounded-full"><Globe size={14}/></div> www.fidelowealth.com</div>
-                      <div className="flex items-center gap-2"><div className="bg-[#ea4335]/15 text-[#ea4335] p-1.5 rounded-full"><Mail size={14}/></div> ask@fidelowealth.com</div>
-                      <div className="flex items-center gap-2"><div className="bg-[#4ade80]/15 text-[#4ade80] p-1.5 rounded-full"><Phone size={14}/></div> 9840566166</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}><div className="bg-[#60a5fa]/15 text-[#60a5fa] p-1.5 rounded-full"><Globe size={14}/></div> www.fidelowealth.com</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}><div className="bg-[#ea4335]/15 text-[#ea4335] p-1.5 rounded-full"><Mail size={14}/></div> ask@fidelowealth.com</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}><div className="bg-[#4ade80]/15 text-[#4ade80] p-1.5 rounded-full"><Phone size={14}/></div> 9840566166</div>
                     </div>
                     <p className="text-[9px] text-[#889995] text-center leading-relaxed max-w-4xl mx-auto">
                       Disclaimer: Mutual fund investments are subject to market risks. Read all scheme-related documents carefully. 

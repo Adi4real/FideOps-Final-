@@ -24,6 +24,24 @@ const PRIORITIES = ["High", "Medium", "Low"];
 const CHANNELS = ["Call", "WhatsApp", "Email", "Meeting", "In-Person", "Branch Visit"];
 const SIP_ADD_ACTIONS = ["SIP Registration", "SIP Top-up", "SIP Restart"];
 
+// --- DATE FORMAT HELPERS FOR HTML INPUTS ---
+const toInputDate = (dateStr) => {
+  if (!dateStr || dateStr === "-") return "";
+  try {
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime())) return format(d, "yyyy-MM-dd");
+  } catch(e) {}
+  return "";
+};
+const toDisplayDate = (dateStr) => {
+  if (!dateStr || dateStr === "-") return "-";
+  try {
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime())) return format(d, "dd-MMM-yyyy");
+  } catch(e) {}
+  return dateStr;
+};
+
 // --- HELPER: Calculate Total SIP Amount ---
 const getSIPTotal = (investments) => {
   return (investments || []).reduce((sum, inv) => {
@@ -162,6 +180,17 @@ export default function Clients() {
       subsT.delete(setTasks);
     }
   }, []);
+
+  // --- FIX: INSTANT SYNC EFFECT FOR SELECTED CLIENT ---
+  useEffect(() => {
+    if (selected) {
+      const updatedClient = clients.find(c => c.id === selected.id);
+      if (updatedClient && JSON.stringify(updatedClient) !== JSON.stringify(selected)) {
+        setSelected(updatedClient);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clients]);
 
   const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
   const uniqueHoldings = [...new Set(clients.map(c => c.holding_nature).filter(v => v && v !== "-"))].sort();
@@ -333,6 +362,7 @@ export default function Clients() {
     }
   };
 
+  // --- SIP EDITING & DELETING (Instant Sync Logic) ---
   const handleSaveInvestment = async (e) => {
     e.preventDefault();
     try {
@@ -342,9 +372,27 @@ export default function Clients() {
       delete finalFormToSave.originalIndex;
       updatedPortfolio[editingInv] = finalFormToSave;
       
+      // Optimistic UI Update (Shows Instantly)
+      setSelected({ ...selected, [targetKey]: updatedPortfolio });
+
       await updateDoc(doc(db, "clients", selected.id), { [targetKey]: updatedPortfolio });
       setEditingInv(null); setExpandedInv(null);
     } catch (error) { console.error("Error saving investment:", error); }
+  };
+
+  const handleDeleteInvestment = async (index) => {
+    if (!window.confirm("Are you sure you want to permanently delete this SIP?")) return;
+    try {
+      const targetKey = Object.keys(selected).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
+      const updatedPortfolio = [...(selected[targetKey] || [])];
+      updatedPortfolio.splice(index, 1);
+      
+      // Optimistic UI Update (Shows Instantly)
+      setSelected({ ...selected, [targetKey]: updatedPortfolio });
+
+      await updateDoc(doc(db, "clients", selected.id), { [targetKey]: updatedPortfolio });
+      setEditingInv(null); setExpandedInv(null);
+    } catch (error) { console.error("Error deleting investment:", error); }
   };
 
   const openEdit = (client) => { setEditClient(client); setShowForm(true); };
@@ -404,6 +452,13 @@ export default function Clients() {
 
   return (
     <div className="p-4 lg:p-8 space-y-6" style={{ background: "var(--bg-black)", minHeight: "100vh", color: "var(--text-main)" }}>
+      <style>{`
+        input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(83%) sepia(51%) saturate(1149%) hue-rotate(339deg) brightness(101%) contrast(105%); cursor: pointer; }
+        input[type="date"] { color-scheme: dark; color: #fbbf24 !important; font-weight: 700; }
+        input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type="number"] { -moz-appearance: textfield; }
+      `}</style>
+      
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: "var(--text-main)" }}>Client Master</h1>
@@ -857,7 +912,7 @@ export default function Clients() {
                       </span>
                     </div>
 
-                    {Object.keys(groupedInvestments).length === 0 ? (
+                    {(!selected.investments || selected.investments.length === 0) ? (
                       <div className="text-center py-12 border border-dashed border-white/10 rounded-xl bg-black/20">
                         <p className="text-sm text-[#889995] mb-4">No investment records found.</p>
                         <button onClick={() => openEdit(selected)} className="text-xs font-bold text-brand-green border border-brand-green/30 px-4 py-2 rounded-lg hover:bg-brand-green hover:text-white transition-all">
@@ -866,7 +921,15 @@ export default function Clients() {
                       </div>
                     ) : (
                       <div className="space-y-6 max-h-[500px] overflow-y-auto pr-1 custom-scrollbar">
-                        {Object.entries(groupedInvestments).map(([folio, invs]) => (
+                        {Object.entries(
+                          (selected.investments || []).map((inv, idx) => ({ ...inv, originalIndex: idx }))
+                          .reduce((acc, inv) => {
+                            const folio = inv.folio_number && inv.folio_number !== "-" ? inv.folio_number : "Unassigned Folios";
+                            if (!acc[folio]) acc[folio] = [];
+                            acc[folio].push(inv);
+                            return acc;
+                          }, {})
+                        ).map(([folio, invs]) => (
                           <div key={folio} className="p-4 rounded-xl" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--border)" }}>
                             <div className="mb-4">
                               <p className="text-[10px] uppercase font-bold text-[#889995] mb-1">Folio Number</p>
@@ -915,8 +978,19 @@ export default function Clients() {
                                                 <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">Amount (₹)</label>
                                                 <input type="number" value={invForm.installment_amount || ""} onChange={e => setInvForm({...invForm, installment_amount: e.target.value})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-brand-green" />
                                               </div>
+                                              <div className="col-span-2 grid grid-cols-2 gap-3 mt-2">
+                                                <div>
+                                                  <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">Start Date</label>
+                                                  <input type="date" value={toInputDate(invForm.start_date)} onChange={e => setInvForm({...invForm, start_date: toDisplayDate(e.target.value)})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-brand-green" />
+                                                </div>
+                                                <div>
+                                                  <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">End Date</label>
+                                                  <input type="date" value={toInputDate(invForm.end_date)} onChange={e => setInvForm({...invForm, end_date: toDisplayDate(e.target.value)})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-brand-green" />
+                                                </div>
+                                              </div>
                                             </div>
-                                            <div className="flex gap-2 justify-end mt-2">
+                                            <div className="flex gap-2 justify-end mt-3 border-t border-white/5 pt-3">
+                                              <div className="flex-1"></div>
                                               <button type="button" onClick={() => setEditingInv(null)} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-white/5 text-[#889995] hover:bg-white/10 transition-colors">Cancel</button>
                                               <button type="submit" className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#008254] text-white hover:bg-[#008254]/80 transition-colors">Save Details</button>
                                             </div>
@@ -924,21 +998,26 @@ export default function Clients() {
                                         </div>
                                       ) : (
                                         <div className="p-3 border-t border-white/5 bg-black/40 grid grid-cols-2 gap-4 animate-in slide-in-from-top-2 relative">
-                                          <button onClick={() => { setEditingInv(inv.originalIndex); setInvForm(inv); }} className="absolute top-3 right-3 text-[#60a5fa] bg-blue-500/10 p-1.5 rounded-md border border-blue-500/20 hover:bg-blue-500/20 transition-colors">
-                                            <Pencil size={12} />
-                                          </button>
+                                          <div className="absolute top-3 right-3 flex items-center gap-2">
+                                            <button onClick={() => { setEditingInv(inv.originalIndex); setInvForm(inv); }} className="text-[#60a5fa] bg-blue-500/10 p-1.5 rounded-md border border-blue-500/20 hover:bg-blue-500/20 transition-colors" title="Edit SIP">
+                                              <Pencil size={12} />
+                                            </button>
+                                            <button onClick={() => handleDeleteInvestment(inv.originalIndex)} className="text-[#f87171] bg-red-500/10 p-1.5 rounded-md border border-red-500/20 hover:bg-red-500/20 transition-colors" title="Delete SIP">
+                                              <Trash2 size={12} />
+                                            </button>
+                                          </div>
                                           <div className="flex items-center gap-2">
                                             <Calendar className="w-3 h-3 text-brand-green" />
                                             <div>
                                               <p className="text-[8px] uppercase tracking-wider text-[#889995]">Start Date</p>
-                                              <p className="text-[10px] text-white">{inv.start_date}</p>
+                                              <p className="text-[10px] text-white">{inv.start_date || "—"}</p>
                                             </div>
                                           </div>
                                           <div className="flex items-center gap-2">
                                             <Calendar className="w-3 h-3 text-[#f87171]" />
                                             <div>
                                               <p className="text-[8px] uppercase tracking-wider text-[#889995]">End Date</p>
-                                              <p className="text-[10px] text-white">{inv.end_date}</p>
+                                              <p className="text-[10px] text-white">{inv.end_date || "—"}</p>
                                             </div>
                                           </div>
                                         </div>

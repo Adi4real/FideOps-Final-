@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { format, parseISO } from "date-fns";
+import { format, parseISO, subMonths } from "date-fns";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ComposedChart
 } from "recharts";
-import { RefreshCw, Save, Pencil, LineChart as ChartIcon, Users, Wallet, Database, Activity } from "lucide-react";
+import { RefreshCw, Save, Pencil, LineChart as ChartIcon, Users, Wallet, Database, Activity, CalendarClock } from "lucide-react";
 import * as XLSX from "xlsx";
 
 // Firebase Imports
@@ -53,9 +53,27 @@ const cardStyle = { background: "#0a1612", border: "1px solid rgba(255,255,255,0
 const inputStyle = { padding: "8px 12px", borderRadius: 8, background: "#050a09", border: "1px solid rgba(255,255,255,0.1)", color: "#c8d4d0", fontSize: 13, width: "100%", outline: "none" };
 const labelStyle = { display: "block", fontSize: 10, fontWeight: 700, color: "#889995", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 };
 
+// Helper: Parse the structured text string to extract transactions and amounts
+function parseTransactionItems(rawString) {
+  if (!rawString) return [];
+  const lines = rawString.split("\n");
+  return lines.map(line => {
+    const match = line.match(/^(.*?)(?:\s*\(₹([\d.,]+)\))?(?:\s*\[(.*?)\])?$/);
+    if (match) {
+      return { 
+        productName: match[1]?.trim() || "", 
+        amount: match[2]?.replace(/,/g, '')?.trim() || "",
+        type: match[3]?.trim() || "SIP"
+      };
+    }
+    return { productName: line.trim(), amount: "", type: "SIP" };
+  }).filter(i => i.productName !== "");
+}
+
 export default function InvestmentReport() {
   const [activeTab, setActiveTab] = useState("aum");
-  const [tasks, setTasks] = useState([]);
+  const [completedTasks, setCompletedTasks] = useState([]);
+  const [clients, setClients] = useState([]);
   const [monthlyStats, setMonthlyStats] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -70,31 +88,23 @@ export default function InvestmentReport() {
     aum: "", purchase: "", redemption: ""
   });
 
-  // --- SMART READ OPTIMIZATION: Live Sync specifically for RM Tab ---
+  // --- SINGLE UNIFIED FETCH: Grabs All Clients & Completed Tasks ---
   useEffect(() => {
-    // Only fetch tasks and attach listeners if we are looking at the RM Tab
-    if (activeTab !== "rm") return;
+    // 1. Fetch Clients for SIP Book calculation
+    const unsubClients = onSnapshot(collection(db, "clients"), (snap) => {
+      setClients(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
 
-    const startOfMonth = `${selectedMonth}-01`;
-    const endOfMonth = `${selectedMonth}-31`; 
-    
-    // Strict query: Only read tasks from this month that are "Completed"
-    const qTasks = query(
-      collection(db, "tasks"), 
-      where("entry_date", ">=", startOfMonth),
-      where("entry_date", "<=", endOfMonth),
-      where("status", "==", "Completed")
-    );
-
-    const unsubscribe = onSnapshot(qTasks, (snapshotTasks) => {
-      const monthTasks = snapshotTasks.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setTasks(monthTasks);
+    // 2. Fetch ALL Completed Tasks for RM Sourcing & Historical SIP Flow calculation
+    const qTasks = query(collection(db, "tasks"), where("status", "==", "Completed"));
+    const unsubTasks = onSnapshot(qTasks, (snap) => {
+      setCompletedTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     }, (error) => {
       console.error("Error with live task sync:", error);
     });
 
-    return () => unsubscribe(); // Cleanup listener when month or tab changes
-  }, [activeTab, selectedMonth]);
+    return () => { unsubClients(); unsubTasks(); }; 
+  }, []);
 
   const fetchMonthlyStats = useCallback(async () => {
     try {
@@ -220,31 +230,112 @@ export default function InvestmentReport() {
   const chartData = useMemo(() => monthlyStats.filter(s => selectedFY === "All" || s.financialYear === selectedFY), [monthlyStats, selectedFY]);
   const availableFYs = ["All", ...new Set(monthlyStats.map(s => s.financialYear))].sort().reverse();
 
-  // --- RM AGGREGATION LOGIC (Strictly based on Action types & Amount) ---
+  // --- AUTOMATED SIP GROWTH ENGINE ---
+  const sipGrowthData = useMemo(() => {
+    // 1. Sum up the current true state of the SIP book from Client Master
+    let currentSipBook = 0;
+    clients.forEach(c => {
+      const targetKey = Object.keys(c).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
+      const invs = c[targetKey] || [];
+      invs.forEach(inv => {
+        if (inv.type === "SIP" || inv.frequency_type === "Monthly") {
+          currentSipBook += Number(String(inv.installment_amount).replace(/,/g, '')) || 0;
+        }
+      });
+    });
+
+    // 2. Aggregate all historical Net Flows (Added - Cancelled) by month from Completed Tasks
+    const sipFlowsByMonth = {};
+    completedTasks.forEach(task => {
+      const d = task.closure_date || task.entry_date;
+      if (!d) return;
+      const monthId = d.substring(0, 7);
+      if (!sipFlowsByMonth[monthId]) sipFlowsByMonth[monthId] = 0;
+
+      let sAmt = 0; let cAmt = 0;
+      let taskAmt = Number(task.amount) || 0;
+      if (taskAmt === 0 && task.product_name) {
+        const parsed = parseTransactionItems(task.product_name);
+        taskAmt = parsed.reduce((sum, item) => sum + (Number(item.amount)||0), 0);
+      }
+
+      if (SIP_CREATE_ACTIONS.includes(task.action)) sAmt += taskAmt;
+      else if (SIP_CEASE_ACTIONS.includes(task.action)) cAmt += taskAmt;
+      else if (task.action === "Lumpsum & SIP") {
+         const parsed = parseTransactionItems(task.product_name);
+         parsed.forEach(item => {
+           if (item.type === "SIP" || !item.type) sAmt += (Number(item.amount)||0);
+         });
+      }
+      
+      sipFlowsByMonth[monthId] += (sAmt - cAmt);
+    });
+
+    // 3. Project backwards up to 12 months
+    const months = [];
+    for(let i = 0; i < 12; i++) {
+      months.push(format(subMonths(new Date(), i), "yyyy-MM"));
+    }
+    months.sort();
+
+    let runningBook = currentSipBook;
+    const reverseMonths = [...months].reverse();
+    const resultData = [];
+
+    // Traverse backwards: Start of month = End of month - Net flows of that month
+    reverseMonths.forEach(mId => {
+       const flow = sipFlowsByMonth[mId] || 0;
+       const endBook = runningBook;
+       const startBook = runningBook - flow;
+       
+       resultData.push({
+         monthId: mId,
+         displayMonth: format(parseISO(`${mId}-01`), "MMM yy"),
+         sipBook: endBook,
+         netFlow: flow,
+         financialYear: getFinancialYear(mId)
+       });
+       runningBook = startBook;
+    });
+
+    return resultData.reverse(); // Restore to chronological order
+  }, [clients, completedTasks]);
+
+
+  // --- RM AGGREGATION LOGIC ---
   const { reportData, grandTotals } = useMemo(() => {
     const stats = {};
     let totals = { sip: 0, purchase: 0, redemption: 0, sipCease: 0, netSip: 0, netPurchase: 0 };
     
-    tasks.forEach(task => {
+    // Filter completed tasks for ONLY the selected RM month
+    const rmTasks = completedTasks.filter(t => {
+      const d = t.closure_date || t.entry_date || "";
+      return d.startsWith(selectedMonth);
+    });
+
+    rmTasks.forEach(task => {
       const rm = task.assigned_to || "Unassigned";
       if (!stats[rm]) stats[rm] = { name: rm, sip: 0, purchase: 0, redemption: 0, sipCease: 0, netSip: 0, netPurchase: 0 };
       
       let sAmt = 0, pAmt = 0, rAmt = 0, cAmt = 0;
-      const taskAmt = Number(task.amount) || 0;
+      
+      // Robust Fallback: Extract from product text if standard amount field is blank
+      let taskAmt = Number(task.amount) || 0;
+      if (taskAmt === 0 && task.product_name) {
+        const parsedItems = parseTransactionItems(task.product_name);
+        taskAmt = parsedItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+      }
 
       if (SIP_CREATE_ACTIONS.includes(task.action)) { sAmt += taskAmt; } 
       else if (LS_CREATE_ACTIONS.includes(task.action)) { pAmt += taskAmt; }
       else if (SIP_CEASE_ACTIONS.includes(task.action)) { cAmt += taskAmt; }
       else if (REDEMPTION_ACTIONS.includes(task.action)) { rAmt += taskAmt; }
       else if (task.action === "Lumpsum & SIP") {
-        const lines = (task.product_name || "").split("\n");
-        lines.forEach(line => {
-            const amtMatch = line.match(/\(₹([\d.,]+)\)/);
-            const typeMatch = line.match(/\[(.*?)\]/);
-            const amt = amtMatch ? parseFloat(amtMatch[1].replace(/,/g, '')) : 0;
-            const type = typeMatch ? typeMatch[1].trim() : "SIP";
-            if (type === "SIP") sAmt += amt;
-            else if (type === "LS") pAmt += amt;
+        const parsedHybrid = parseTransactionItems(task.product_name);
+        parsedHybrid.forEach(item => {
+           const amt = Number(item.amount) || 0;
+           if (item.type === "SIP") sAmt += amt;
+           else if (item.type === "LS") pAmt += amt;
         });
       }
 
@@ -267,7 +358,7 @@ export default function InvestmentReport() {
       reportData: Object.values(stats).sort((a, b) => (b.sip + b.purchase) - (a.sip + a.purchase)), 
       grandTotals: totals 
     };
-  }, [tasks]);
+  }, [completedTasks, selectedMonth]);
 
   if (loading) return <div className="h-screen flex items-center justify-center text-[#889995]">Loading analytics...</div>;
 
@@ -277,15 +368,17 @@ export default function InvestmentReport() {
         input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         input[type="number"] { -moz-appearance: textfield; }
         
-        /* --- CALENDAR ICON FIX --- */
+        /* --- YELLOW CALENDAR ICON FIX --- */
         input[type="date"]::-webkit-calendar-picker-indicator,
         input[type="month"]::-webkit-calendar-picker-indicator {
-          filter: invert(1);
-          opacity: 0.7;
+          filter: invert(83%) sepia(51%) saturate(1149%) hue-rotate(339deg) brightness(101%) contrast(105%);
+          opacity: 1;
           cursor: pointer;
         }
         input[type="date"], input[type="month"] {
           color-scheme: dark;
+          color: #fbbf24 !important; 
+          font-weight: 700;
         }
       `}</style>
 
@@ -310,32 +403,37 @@ export default function InvestmentReport() {
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 24, borderBottom: "1px solid rgba(255,255,255,0.1)", marginBottom: 32 }}>
-          {["aum", "cashflow", "rm"].map(tab => (
+          {["aum", "sip", "cashflow", "rm"].map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)} style={{ paddingBottom: 12, fontSize: 14, fontWeight: 700, borderBottom: activeTab === tab ? "2px solid #4ade80" : "none", color: activeTab === tab ? "#4ade80" : "#889995", background: "transparent", cursor: "pointer", textTransform: "capitalize" }}>
-              {tab === "rm" ? "RM Sourcing" : tab === "aum" ? "AUM Growth" : "Cashflow"}
+              {tab === "rm" ? "RM Sourcing" : tab === "aum" ? "AUM Growth" : tab === "sip" ? "SIP Book Growth" : "Cashflow"}
             </button>
           ))}
         </div>
 
         {activeTab !== "rm" ? (
           <>
-            {/* Form */}
-            <div style={cardStyle} ref={formRef}>
-              <form onSubmit={handleSaveStat} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 16 }}>
-                <div><label style={labelStyle}>Month</label><input type="month" value={statForm.monthId} onChange={e => setStatForm({...statForm, monthId: e.target.value})} style={inputStyle} required disabled={isEditingStat} /></div>
-                <div><label style={labelStyle}>Total AUM (₹)</label><input type="number" value={statForm.aum} onChange={e => setStatForm({...statForm, aum: e.target.value})} style={inputStyle} /></div>
-                <div><label style={labelStyle}>Purchase (₹)</label><input type="number" value={statForm.purchase} onChange={e => setStatForm({...statForm, purchase: e.target.value})} style={inputStyle} /></div>
-                <div><label style={labelStyle}>Redemption (₹)</label><input type="number" value={statForm.redemption} onChange={e => setStatForm({...statForm, redemption: e.target.value})} style={inputStyle} /></div>
-                <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                  <button type="submit" style={{ flex: 1, height: 38, borderRadius: 8, background: "#008254", color: "white", border: "none", fontWeight: 700, cursor: "pointer" }}>Save</button>
-                  {isEditingStat && <button type="button" onClick={() => {setIsEditingStat(false); setStatForm({ monthId: format(new Date(), "yyyy-MM"), aum: "", purchase: "", redemption: "" });}} style={{ height: 38, padding: "0 16px", borderRadius: 8, background: "rgba(248,113,113,0.1)", color: "#f87171", border: "1px solid #f87171", cursor: "pointer" }}>Cancel</button>}
-                </div>
-              </form>
-            </div>
+            {/* Entry Form (Hidden for SIP Book since it's fully automated) */}
+            {activeTab !== "sip" && (
+              <div style={cardStyle} ref={formRef}>
+                <form onSubmit={handleSaveStat} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 16 }}>
+                  <div><label style={labelStyle}>Month</label><input type="month" value={statForm.monthId} onChange={e => setStatForm({...statForm, monthId: e.target.value})} style={inputStyle} required disabled={isEditingStat} /></div>
+                  <div><label style={labelStyle}>Total AUM (₹)</label><input type="number" value={statForm.aum} onChange={e => setStatForm({...statForm, aum: e.target.value})} style={inputStyle} /></div>
+                  <div><label style={labelStyle}>Purchase (₹)</label><input type="number" value={statForm.purchase} onChange={e => setStatForm({...statForm, purchase: e.target.value})} style={inputStyle} /></div>
+                  <div><label style={labelStyle}>Redemption (₹)</label><input type="number" value={statForm.redemption} onChange={e => setStatForm({...statForm, redemption: e.target.value})} style={inputStyle} /></div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                    <button type="submit" style={{ flex: 1, height: 38, borderRadius: 8, background: "#008254", color: "white", border: "none", fontWeight: 700, cursor: "pointer" }}>Save</button>
+                    {isEditingStat && <button type="button" onClick={() => {setIsEditingStat(false); setStatForm({ monthId: format(new Date(), "yyyy-MM"), aum: "", purchase: "", redemption: "" });}} style={{ height: 38, padding: "0 16px", borderRadius: 8, background: "rgba(248,113,113,0.1)", color: "#f87171", border: "1px solid #f87171", cursor: "pointer" }}>Cancel</button>}
+                  </div>
+                </form>
+              </div>
+            )}
 
+            {/* Main Analytical Charts */}
             <div style={cardStyle}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
-                <h3 style={{ fontWeight: 700 }}>{activeTab === 'aum' ? 'AUM Growth' : 'Cashflow Trends'}</h3>
+                <h3 style={{ fontWeight: 700 }}>
+                  {activeTab === 'aum' ? 'AUM Growth' : activeTab === 'sip' ? 'Automated SIP Book Trajectory' : 'Cashflow Trends'}
+                </h3>
                 <select value={selectedFY} onChange={e => setSelectedFY(e.target.value)} style={{ background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", color: "#889995", padding: "4px 8px", borderRadius: 6, fontWeight: 700, outline: "none" }}>
                   {availableFYs.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
@@ -349,6 +447,17 @@ export default function InvestmentReport() {
                     <Tooltip {...tooltipStyle} formatter={(v) => formatCr(v)} />
                     <Line type="monotone" dataKey="totalAUM" stroke="#4ade80" strokeWidth={3} name="Total AUM" dot={{ r: 6 }} />
                   </LineChart>
+                ) : activeTab === "sip" ? (
+                  <ComposedChart data={sipGrowthData.filter(s => selectedFY === "All" || s.financialYear === selectedFY)}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                    <XAxis dataKey="displayMonth" tick={{ fill: "#889995", fontSize: 12 }} axisLine={false} />
+                    <YAxis yAxisId="left" tick={{ fill: "#889995", fontSize: 12 }} axisLine={false} tickFormatter={(v) => formatL(v).replace('₹', '')} />
+                    <YAxis yAxisId="right" orientation="right" tick={{ fill: "#fbbf24", fontSize: 12 }} axisLine={false} tickFormatter={(v) => formatL(v).replace('₹', '')} />
+                    <Tooltip {...tooltipStyle} formatter={(v) => formatL(v)} />
+                    <Legend />
+                    <Bar yAxisId="right" dataKey="netFlow" fill="#60a5fa" name="Net SIP Sourced" />
+                    <Line yAxisId="left" type="monotone" dataKey="sipBook" stroke="#4ade80" strokeWidth={3} name="Total SIP Book Size" dot={{ r: 4 }} />
+                  </ComposedChart>
                 ) : (
                   <ComposedChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
@@ -365,6 +474,7 @@ export default function InvestmentReport() {
               </ResponsiveContainer>
             </div>
 
+            {/* Data Tables */}
             <div style={{ ...cardStyle, overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
@@ -376,6 +486,12 @@ export default function InvestmentReport() {
                         <th style={{ padding: 12, textAlign: "right" }}>Change</th>
                         <th style={{ padding: 12, textAlign: "right" }}>Growth (%)</th>
                         <th style={{ padding: 12, textAlign: "center" }}>Act</th>
+                      </>
+                    ) : activeTab === 'sip' ? (
+                      <>
+                        <th style={{ padding: 12, textAlign: "left" }}>Month</th>
+                        <th style={{ padding: 12, textAlign: "right" }}>Total SIP Book Size</th>
+                        <th style={{ padding: 12, textAlign: "right" }}>Net Sourced Flow</th>
                       </>
                     ) : (
                       <>
@@ -390,40 +506,57 @@ export default function InvestmentReport() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[...monthlyStats].reverse().map(s => {
-                    if (selectedFY !== "All" && s.financialYear !== selectedFY) return null;
+                  {activeTab === 'sip' ? (
+                    [...sipGrowthData].reverse().map(s => {
+                      if (selectedFY !== "All" && s.financialYear !== selectedFY) return null;
+                      const flowColor = s.netFlow >= 0 ? "#4ade80" : "#f87171";
+                      return (
+                        <tr key={s.monthId} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                          <td style={{ padding: 12, fontWeight: 700 }}>
+                            {s.displayMonth}
+                            <span style={{ display: "block", fontSize: 9, color: "#556660", marginTop: 2 }}>{s.financialYear}</span>
+                          </td>
+                          <td style={{ padding: 12, textAlign: "right", fontWeight: 700, color: "white" }}>{formatL(s.sipBook)}</td>
+                          <td style={{ padding: 12, textAlign: "right", color: flowColor, fontWeight: 700 }}>{s.netFlow > 0 ? "+" : ""}{formatL(s.netFlow)}</td>
+                        </tr>
+                      );
+                    })
+                  ) : (
+                    [...monthlyStats].reverse().map(s => {
+                      if (selectedFY !== "All" && s.financialYear !== selectedFY) return null;
 
-                    const aumColor = s.aumChange >= 0 ? "#4ade80" : "#f87171";
-                    const flowColor = s.netCashflow >= 0 ? "#4ade80" : "#f87171";
+                      const aumColor = s.aumChange >= 0 ? "#4ade80" : "#f87171";
+                      const flowColor = s.netCashflow >= 0 ? "#4ade80" : "#f87171";
 
-                    return (
-                      <tr key={s.monthId} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
-                        <td style={{ padding: 12, fontWeight: 700 }}>
-                          {s.displayMonth}
-                          <span style={{ display: "block", fontSize: 9, color: "#556660", marginTop: 2 }}>{s.financialYear}</span>
-                        </td>
-                        
-                        {activeTab === 'aum' ? (
-                          <>
-                            <td style={{ padding: 12, textAlign: "right", fontWeight: 700, color: "white" }}>{formatCr(s.totalAUM)}</td>
-                            <td style={{ padding: 12, textAlign: "right", color: aumColor }}>{s.aumChange > 0 ? "+" : ""}{formatCr(s.aumChange)}</td>
-                            <td style={{ padding: 12, textAlign: "right", color: aumColor }}>{s.aumChangePct > 0 ? "+" : ""}{s.aumChangePct}%</td>
-                          </>
-                        ) : (
-                          <>
-                            <td style={{ padding: 12, textAlign: "right", color: "#60a5fa" }}>{formatL(s.purchase)}</td>
-                            <td style={{ padding: 12, textAlign: "right", color: "#f87171" }}>{formatL(s.redemption)}</td>
-                            <td style={{ padding: 12, textAlign: "right", color: flowColor, fontWeight: 700 }}>{s.netCashflow > 0 ? "+" : ""}{formatL(s.netCashflow)}</td>
-                            <td style={{ padding: 12, textAlign: "right", color: "#fbbf24", fontWeight: 600 }}>{formatL(s.cumCashflow)}</td>
-                          </>
-                        )}
-                        
-                        <td style={{ padding: 12, textAlign: "center" }}>
-                          <button onClick={() => handleEditRow(s)} style={{ background: "transparent", border: "none", color: "#889995", cursor: "pointer" }} title="Edit Record"><Pencil size={14}/></button>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                      return (
+                        <tr key={s.monthId} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                          <td style={{ padding: 12, fontWeight: 700 }}>
+                            {s.displayMonth}
+                            <span style={{ display: "block", fontSize: 9, color: "#556660", marginTop: 2 }}>{s.financialYear}</span>
+                          </td>
+                          
+                          {activeTab === 'aum' ? (
+                            <>
+                              <td style={{ padding: 12, textAlign: "right", fontWeight: 700, color: "white" }}>{formatCr(s.totalAUM)}</td>
+                              <td style={{ padding: 12, textAlign: "right", color: aumColor }}>{s.aumChange > 0 ? "+" : ""}{formatCr(s.aumChange)}</td>
+                              <td style={{ padding: 12, textAlign: "right", color: aumColor }}>{s.aumChangePct > 0 ? "+" : ""}{s.aumChangePct}%</td>
+                            </>
+                          ) : (
+                            <>
+                              <td style={{ padding: 12, textAlign: "right", color: "#60a5fa" }}>{formatL(s.purchase)}</td>
+                              <td style={{ padding: 12, textAlign: "right", color: "#f87171" }}>{formatL(s.redemption)}</td>
+                              <td style={{ padding: 12, textAlign: "right", color: flowColor, fontWeight: 700 }}>{s.netCashflow > 0 ? "+" : ""}{formatL(s.netCashflow)}</td>
+                              <td style={{ padding: 12, textAlign: "right", color: "#fbbf24", fontWeight: 600 }}>{formatL(s.cumCashflow)}</td>
+                            </>
+                          )}
+                          
+                          <td style={{ padding: 12, textAlign: "center" }}>
+                            <button onClick={() => handleEditRow(s)} style={{ background: "transparent", border: "none", color: "#889995", cursor: "pointer" }} title="Edit Record"><Pencil size={14}/></button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
@@ -438,7 +571,12 @@ export default function InvestmentReport() {
                     <p style={{fontSize: 13, color: "#4ade80", fontWeight: 700}}>Live Syncing Completed Tasks</p>
                   </div>
                </div>
-              <input type="month" value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} style={{ background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", color: "#4ade80", padding: "8px 16px", borderRadius: 10, outline: "none", fontWeight: 700 }} />
+
+               {/* Beautiful Yellow Month Picker Box */}
+               <div style={{ display: "flex", alignItems: "center", background: "#0a1612", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 12, padding: "0 16px", height: 52 }}>
+                 <CalendarClock size={16} className="text-[#fbbf24]" style={{ marginRight: 12 }} />
+                 <input type="month" value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} style={{ background: "transparent", border: "none", color: "#fbbf24", outline: "none", fontWeight: 700, fontSize: 14 }} />
+               </div>
             </div>
             
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 24 }}>

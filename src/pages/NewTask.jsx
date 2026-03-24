@@ -161,6 +161,7 @@ export default function NewTask() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [saving, setSaving] = useState(false);
   const suggestRef = useRef(null);
+  const genericInputRef = useRef(null);
 
   const [productInput, setProductInput] = useState("");
   const [productTags, setProductTags] = useState([]);
@@ -175,6 +176,25 @@ export default function NewTask() {
     follow_up_date: "", channel: "Call", status: "Pending",
     financial_year: getFinancialYear(),
   });
+
+  const isTransactionUI = form.category === "Transaction" || SIP_ADD_ACTIONS.includes(form.action);
+
+  // --- NEW: AUTO-FOCUS WHEN ACTION IS SELECTED ---
+  useEffect(() => {
+    if (form.action && form.action !== "SIP Cancellation") {
+      // Small delay allows React to render the inputs before we try to focus them
+      setTimeout(() => {
+        if (isTransactionUI) {
+          // Focus the first editable Scheme/Product Name field
+          const firstEditable = document.querySelector('input[placeholder="Scheme / Product Name"]:not([readOnly])');
+          if (firstEditable) firstEditable.focus();
+        } else {
+          // Focus the Generic Product Tags field
+          if (genericInputRef.current) genericInputRef.current.focus();
+        }
+      }, 100);
+    }
+  }, [form.action, isTransactionUI]);
 
   useEffect(() => {
     const fetchClients = async () => {
@@ -321,8 +341,6 @@ export default function NewTask() {
       await fetch(`https://api.ultramsg.com/${INSTANCE_ID}/messages/chat`, { method: 'POST', body: params });
     } catch (e) { console.error(e); }
   };
-
-  const isTransactionUI = form.category === "Transaction" || SIP_ADD_ACTIONS.includes(form.action);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -632,7 +650,7 @@ export default function NewTask() {
                   <>
                     <div style={{ gridColumn: "1 / -1" }}>
                       <label style={labelStyle}>Product Names</label>
-                      <input style={iStyle} placeholder="Type comma or Enter to add" value={productInput} onChange={e => setProductInput(e.target.value)} onKeyDown={handleProductKeyDown} onBlur={addTag} />
+                      <input ref={genericInputRef} style={iStyle} placeholder="Type comma or Enter to add" value={productInput} onChange={e => setProductInput(e.target.value)} onKeyDown={handleProductKeyDown} onBlur={addTag} />
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
                         {productTags.map((tag, idx) => (
                           <div key={idx} style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(0,130,84,0.15)", border: "1px solid rgba(0,130,84,0.3)", padding: "4px 10px", borderRadius: 8, color: "#4ade80", fontSize: 12, fontWeight: 600 }}>

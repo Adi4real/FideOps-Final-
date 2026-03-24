@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import {
   CheckCircle2, Clock, AlertTriangle, CalendarClock,
@@ -246,7 +246,7 @@ export default function Dashboard() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           
-          {/* LINK TO CLIENT REVIEW PAGE WITH FILTER STATE */}
+          {/* LINK TO UNSCHEDULED REVIEWS */}
           <Link to={createPageUrl("ClientReview")} state={{ filterStatus: "unscheduled" }} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
             <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16 }} className="hover:border-[#f87171] hover:bg-white/5 transition-all">
               <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(248,113,113,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -259,25 +259,29 @@ export default function Dashboard() {
             </div>
           </Link>
 
-          <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(96,165,250,0.3)" }}>
-            <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(96,165,250,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <ClipboardCheck style={{ width: 20, height: 20, color: "#60a5fa" }} />
+          {/* LINK TO DUE REVIEWS FOR THE SELECTED MONTH */}
+          <Link to={createPageUrl("ClientReview")} state={{ filterStatus: "specific_month", targetMonth: reviewMonth }} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
+            <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(96,165,250,0.3)" }} className="hover:border-[#60a5fa] hover:bg-white/5 transition-all">
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(96,165,250,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <ClipboardCheck style={{ width: 20, height: 20, color: "#60a5fa" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 26, fontWeight: 800, color: "#60a5fa", lineHeight: 1 }}>
+                  {pendingReviewsThisMonth} <span style={{fontSize: 12, color: "#889995", fontWeight: 600}}>/ {totalReviewsThisMonth}</span>
+                </p>
+                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Pending Due For {format(parseISO(`${reviewMonth}-01`), "MMMM")}</p>
+              </div>
             </div>
-            <div>
-              <p style={{ fontSize: 26, fontWeight: 800, color: "#60a5fa", lineHeight: 1 }}>
-                {pendingReviewsThisMonth} <span style={{fontSize: 12, color: "#889995", fontWeight: 600}}>/ {totalReviewsThisMonth}</span>
-              </p>
-              <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Pending Due For {format(new Date(`${reviewMonth}-01`), "MMMM")}</p>
-            </div>
-          </div>
+          </Link>
 
+          {/* COMPLETED (Static, no link) */}
           <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(74,222,128,0.3)" }}>
             <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(74,222,128,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <CheckCircle2 style={{ width: 20, height: 20, color: "#4ade80" }} />
             </div>
             <div>
               <p style={{ fontSize: 26, fontWeight: 800, color: "#4ade80", lineHeight: 1 }}>{completedReviewsThisMonth}</p>
-              <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Completed In {format(new Date(`${reviewMonth}-01`), "MMMM")}</p>
+              <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Completed In {format(parseISO(`${reviewMonth}-01`), "MMMM")}</p>
             </div>
           </div>
         </div>
