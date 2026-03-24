@@ -60,6 +60,8 @@ export default function GoalTracker() {
   });
 
   const [fundSearch, setFundSearch] = useState({ index: null, text: "" });
+  const [clientSearchText, setClientSearchText] = useState("");
+  const [showClientDropdown, setShowClientDropdown] = useState(false);
 
   // Fetch Clients
   useEffect(() => {
@@ -153,6 +155,7 @@ export default function GoalTracker() {
 
   // --- ACTIONS ---
   const openNewForm = () => {
+    setClientSearchText("");
     setDraft({
       id: "", clientId: "", clientName: "", date: format(new Date(), "yyyy-MM-dd"),
       goalType: "Retirement", customGoal: "", assigned: [],
@@ -166,6 +169,7 @@ export default function GoalTracker() {
 
   const openEditForm = (goal) => {
     const isCustom = !GOAL_TYPES.includes(goal.goalType) && goal.goalType;
+    setClientSearchText(goal.clientName || "");
     setDraft({
       ...goal,
       goalType: isCustom ? "Custom..." : goal.goalType,
@@ -184,7 +188,7 @@ export default function GoalTracker() {
 
   const handleSaveGoal = async (e) => {
     e.preventDefault();
-    if (!draft.clientId) return alert("Please select a client.");
+    if (!draft.clientId) return alert("Please select a valid client from the dropdown.");
 
     try {
       const client = clients.find(c => c.id === draft.clientId);
@@ -246,16 +250,15 @@ export default function GoalTracker() {
     try {
       const element = printRef.current;
       
-      // Temporarily fix width and let height be auto so it perfectly calculates boundaries
       const originalWidth = element.style.width;
       const originalHeight = element.style.height;
       const originalOverflow = element.style.overflow;
       
-      element.style.width = '1000px'; 
+      // Force an exact 1050px width so all grids behave as desktop layouts
+      element.style.width = '1050px'; 
       element.style.height = 'auto';
       element.style.overflow = 'visible';
 
-      // Give React/DOM a tiny moment to recalculate the auto height layout
       await new Promise(resolve => setTimeout(resolve, 150));
 
       const canvas = await html2canvas(element, {
@@ -263,7 +266,7 @@ export default function GoalTracker() {
         scale: 2, 
         useCORS: true,
         logging: false,
-        windowWidth: 1000
+        windowWidth: 1050
       });
       
       const dataUrl = canvas.toDataURL('image/png');
@@ -272,7 +275,6 @@ export default function GoalTracker() {
       link.href = dataUrl;
       link.click();
 
-      // Restore layout
       element.style.width = originalWidth;
       element.style.height = originalHeight;
       element.style.overflow = originalOverflow;
@@ -458,13 +460,44 @@ export default function GoalTracker() {
                   <div className="space-y-4">
                     <div>
                       <label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Client Name *</label>
-                      <select value={draft.clientId} onChange={e => {
-                        const c = clients.find(x => x.id === e.target.value);
-                        setDraft({...draft, clientId: c.id, clientName: c.client_name, assigned: c.rm_assigned ? [c.rm_assigned] : [] });
-                      }} className="w-full bg-[#050a09] border border-white/10 p-2.5 rounded-lg text-white text-xs focus:border-[#008254] outline-none" required>
-                        <option value="">Select a Client...</option>
-                        {clients.map(c => <option key={c.id} value={c.id}>{c.client_name}</option>)}
-                      </select>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#889995]" />
+                        <input 
+                          placeholder="Search Client..." 
+                          value={clientSearchText} 
+                          onFocus={() => setShowClientDropdown(true)} 
+                          onChange={e => {
+                            setClientSearchText(e.target.value);
+                            setShowClientDropdown(true);
+                            setDraft({...draft, clientId: "", clientName: ""}); 
+                          }} 
+                          className="w-full bg-[#050a09] border border-white/10 py-2.5 pl-9 pr-3 rounded-lg text-white text-xs focus:border-[#008254] outline-none" 
+                          required 
+                        />
+                        {showClientDropdown && clientSearchText && (
+                          <div 
+                            className="absolute top-[100%] left-0 right-0 bg-[#0a1612] border border-[#008254] rounded-xl mt-1 z-50 max-h-[200px] overflow-y-auto shadow-2xl custom-scrollbar" 
+                            onMouseLeave={() => setShowClientDropdown(false)}
+                          >
+                            {clients.filter(c => c.client_name?.toLowerCase().includes(clientSearchText.toLowerCase())).map(c => (
+                              <div 
+                                key={c.id} 
+                                onClick={() => {
+                                  setClientSearchText(c.client_name);
+                                  setDraft({...draft, clientId: c.id, clientName: c.client_name, assigned: c.rm_assigned ? [c.rm_assigned] : [] });
+                                  setShowClientDropdown(false);
+                                }} 
+                                className="p-3 text-xs text-white hover:bg-[#008254] cursor-pointer border-b border-white/10"
+                              >
+                                {c.client_name} {c.client_code ? <span className="text-[#4ade80] ml-1">({c.client_code})</span> : ""}
+                              </div>
+                            ))}
+                            {clients.filter(c => c.client_name?.toLowerCase().includes(clientSearchText.toLowerCase())).length === 0 && (
+                              <div className="p-3 text-xs text-[#889995] italic">No clients found.</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                     <div>
                       <label className="block text-[9px] font-bold text-[#889995] uppercase mb-1.5">Plan Date</label>
@@ -664,11 +697,14 @@ export default function GoalTracker() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-[1.2fr_0.8fr] gap-10 items-start">
+                  {/* FIXED: Hardcoded explicit grid layout to prevent html2canvas squishing */}
+                  <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: "40px", alignItems: "start" }}>
+                    
                     <div className="space-y-8">
                       <div>
                         <h3 className="text-[11px] font-black text-[#008254] uppercase tracking-[1px] border-b border-white/10 pb-2 mb-4">Financial Snapshot</h3>
-                        <div className="grid grid-cols-2 gap-6 bg-white/5 border border-white/10 rounded-2xl p-6">
+                        {/* FIXED: Explicit sub-grid to prevent wrapping in html2canvas */}
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "24px" }} className="bg-white/5 border border-white/10 rounded-2xl p-6">
                           <div><label className="text-[9px] font-black text-[#889995] uppercase">PRESENT COST</label><div className="text-xl font-bold text-white mt-1">₹{Number(activeGoal.pv).toLocaleString('en-IN')}</div></div>
                           <div><label className="text-[9px] font-black text-[#889995] uppercase">FUTURE GOAL</label><div className="text-xl font-black text-[#fbbf24] mt-1">₹{Math.round(pMath.goalFV).toLocaleString('en-IN')}</div></div>
                           <div><label className="text-[9px] font-black text-[#889995] uppercase">TARGET DATE</label><div className="text-xl font-bold text-white mt-1">{format(addYears(parseISO(activeGoal.date), Number(activeGoal.years) || 0), "MMM yyyy")}</div></div>
@@ -692,7 +728,7 @@ export default function GoalTracker() {
                               {(activeGoal.investments || []).map((inv, i) => (
                                 <div key={i} className="flex justify-between items-center bg-black/40 border border-white/5 rounded-lg px-4 py-2.5">
                                   <div className="min-w-0 pr-4 flex items-center">
-                                      <span className={`text-[9px] font-black uppercase px-2 py-1 rounded mr-3 shrink-0 ${inv.type === 'SIP' ? 'bg-[#008254]/20 text-[#4ade80]' : 'bg-blue-500/20 text-blue-400'}`}>{inv.type}</span>
+                                      <span className={`text-[9px] font-black uppercase px-2 py-1 rounded mr-3 shrink-0 ${inv.type === 'SIP' ? 'bg-[#008254]/20 text-[#4ade80]' : 'bg-[#3b82f6]/20 text-[#60a5fa]'}`}>{inv.type}</span>
                                       <span className="text-sm font-semibold text-[#c8d4d0] break-words">{inv.fund || "Unallocated Funds"}</span>
                                   </div>
                                   <span className="text-sm font-black text-white shrink-0">₹{Number(inv.amount).toLocaleString('en-IN')}</span>
@@ -732,14 +768,15 @@ export default function GoalTracker() {
                   <div className="mt-12 pt-6 border-t border-white/10">
                     <div className="flex flex-wrap items-center justify-center gap-6 mb-6 text-[#c8d4d0] text-xs font-semibold">
                       <div className="flex items-center gap-2">
-                        <div className="bg-white/10 p-1.5 rounded-full"><Facebook size={14}/></div>
-                        <div className="bg-white/10 p-1.5 rounded-full"><Instagram size={14}/></div>
-                        <div className="bg-white/10 p-1.5 rounded-full"><Twitter size={14}/></div>
+                        {/* FIXED: Brand Colors applied to social icons */}
+                        <div className="bg-[#1877F2]/15 text-[#1877F2] p-1.5 rounded-full"><Facebook size={14}/></div>
+                        <div className="bg-[#E1306C]/15 text-[#E1306C] p-1.5 rounded-full"><Instagram size={14}/></div>
+                        <div className="bg-[#1DA1F2]/15 text-[#1DA1F2] p-1.5 rounded-full"><Twitter size={14}/></div>
                         <span className="ml-1">fidelowealth</span>
                       </div>
-                      <div className="flex items-center gap-2"><div className="bg-white/10 p-1.5 rounded-full"><Globe size={14}/></div> www.fidelowealth.com</div>
-                      <div className="flex items-center gap-2"><div className="bg-white/10 p-1.5 rounded-full"><Mail size={14}/></div> ask@fidelowealth.com</div>
-                      <div className="flex items-center gap-2"><div className="bg-[#4ade80]/20 text-[#4ade80] p-1.5 rounded-full"><Phone size={14}/></div> 9840566166</div>
+                      <div className="flex items-center gap-2"><div className="bg-[#60a5fa]/15 text-[#60a5fa] p-1.5 rounded-full"><Globe size={14}/></div> www.fidelowealth.com</div>
+                      <div className="flex items-center gap-2"><div className="bg-[#ea4335]/15 text-[#ea4335] p-1.5 rounded-full"><Mail size={14}/></div> ask@fidelowealth.com</div>
+                      <div className="flex items-center gap-2"><div className="bg-[#4ade80]/15 text-[#4ade80] p-1.5 rounded-full"><Phone size={14}/></div> 9840566166</div>
                     </div>
                     <p className="text-[9px] text-[#889995] text-center leading-relaxed max-w-4xl mx-auto">
                       Disclaimer: Mutual fund investments are subject to market risks. Read all scheme-related documents carefully. 
