@@ -50,7 +50,7 @@ const navGroups = [
 ];
 
 export default function Layout({ children, currentPageName }) {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [user, setUser] = useState(null);
   
   // --- STATE ---
@@ -58,6 +58,7 @@ export default function Layout({ children, currentPageName }) {
   const [todayTaskCount, setTodayTaskCount] = useState(0);
 
   useEffect(() => {
+    if (window.innerWidth < 1024) setSidebarOpen(false);
     setUser({
       full_name: "Adi",
       email: "adi@fidelowealth.com",
@@ -90,7 +91,8 @@ export default function Layout({ children, currentPageName }) {
       try {
         const fetchIndex = async (symbol) => {
           const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`;
-          const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+          // FIXED FOR VERCEL: Switched to AllOrigins proxy which allows production domains
+          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
           
           const res = await fetch(proxyUrl);
           if (!res.ok) throw new Error("Network response was not ok");
