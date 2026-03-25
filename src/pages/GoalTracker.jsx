@@ -737,7 +737,7 @@ export default function GoalTracker() {
               <div className="overflow-y-auto flex-1 custom-scrollbar">
                 <div ref={printRef} className="p-8 md:p-10 bg-[#0a1110]">
                   <div className="flex justify-between items-center border-b border-white/10 pb-6 mb-8">
-                    <img src="/FW_1_logo.png" alt="FideloWealth" className="h-10 object-contain" />
+                    <img src="/FW_1_logo_2.png" alt="FideloWealth" className="h-10 object-contain" />
                     <div className="text-right">
                       <h2 className="text-2xl font-black text-[#008254] tracking-wide uppercase">{activeGoal.clientName}</h2>
                       <p className="text-[10px] font-black text-[#889995] uppercase tracking-[2px] mt-1">{activeGoal.goalType}</p>
