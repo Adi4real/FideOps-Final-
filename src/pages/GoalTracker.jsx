@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Search, Plus, X, Pencil, Trash2, FileSpreadsheet, CalendarClock, Users, AlertCircle, Save, Info, Target, Clock, Image as ImageIcon, Globe, Mail, Phone, Facebook, Instagram, Twitter, TrendingUp, ChevronDown, ChevronUp } from "lucide-react";
+import { Search, Plus, X, Pencil, Trash2, FileSpreadsheet, CalendarClock, Users, AlertCircle, Save, Info, Target, Clock, Image as ImageIcon, Globe, Mail, Phone, Facebook, Instagram, Twitter, TrendingUp, ChevronDown, ChevronUp, FileText, Briefcase, Activity } from "lucide-react";
 import { format, parseISO, addYears } from "date-fns";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import html2canvas from "html2canvas";
@@ -45,8 +45,13 @@ export default function GoalTracker() {
   const [showForm, setShowForm] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [activeGoal, setActiveGoal] = useState(null);
+  
+  // NEW: Comprehensive Report Modal
+  const [activeReportClient, setActiveReportClient] = useState(null);
+
   const [exporting, setExporting] = useState(false);
   const printRef = useRef(null);
+  const reportPrintRef = useRef(null);
 
   // Form State
   const [draft, setDraft] = useState({
@@ -240,42 +245,47 @@ export default function GoalTracker() {
     window.XLSX.writeFile(wb, "FideloWealth_Goals.xlsx");
   };
 
-  const handleDownloadImage = async () => {
-    if (!printRef.current) return;
+  // Generic Export function that accepts a ref and filename
+  const captureAndExport = async (elementRef, fileName) => {
+    if (!elementRef.current) return;
     setExporting(true);
-    
     try {
-      const element = printRef.current;
+      const element = elementRef.current;
+      
       const originalWidth = element.style.width;
       const originalHeight = element.style.height;
       const originalOverflow = element.style.overflow;
+      const originalMaxHeight = element.style.maxHeight;
       
       element.style.width = '1050px'; 
       element.style.height = 'auto';
+      element.style.maxHeight = 'none';
       element.style.overflow = 'visible';
 
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, 300));
 
       const canvas = await html2canvas(element, {
         backgroundColor: '#0a1110', 
         scale: 2, 
         useCORS: true,
         logging: false,
-        windowWidth: 1050
+        windowWidth: 1050,
+        scrollY: -window.scrollY
       });
       
       const dataUrl = canvas.toDataURL('image/png');
       const link = document.createElement('a');
-      link.download = `${activeGoal?.clientName.replace(/\s+/g, '_')}_Goal_Plan.png`;
+      link.download = fileName;
       link.href = dataUrl;
       link.click();
 
       element.style.width = originalWidth;
       element.style.height = originalHeight;
       element.style.overflow = originalOverflow;
+      element.style.maxHeight = originalMaxHeight || '';
     } catch (err) {
       console.error("Failed to export image", err);
-      alert("Failed to generate image.");
+      alert("Failed to generate export.");
     } finally {
       setExporting(false);
     }
@@ -315,6 +325,8 @@ export default function GoalTracker() {
         .table-td { padding: 14px 10px; border-bottom: 1px solid var(--border); text-align: center; font-size: 12px; }
         .amt-stack { display: flex; flex-direction: column; gap: 2px; align-items: center; font-weight: 700; line-height: 1.2; }
         .amt-sub { font-size: 10px; color: var(--text-muted); border-top: 1px solid var(--border); width: 100%; padding-top: 2px; margin-top: 2px; }
+
+        .break-inside-avoid { break-inside: avoid; page-break-inside: avoid; display: inline-block; width: 100%; }
       `}</style>
 
       {/* HEADER & FILTERS */}
@@ -335,10 +347,7 @@ export default function GoalTracker() {
           )}
         </div>
 
-        {/* --- FIXED: FLEXBOX LAYOUT FOR SEARCH & FILTERS --- */}
         <div className="flex flex-col xl:flex-row gap-4 items-stretch xl:items-center w-full">
-          
-          {/* Left: Main Search (Takes up remaining space) */}
           <div className="flex-1 flex items-center bg-[var(--input-bg)] border border-[var(--border)] rounded-xl px-4 h-[52px] focus-within:border-[#008254] transition-colors shadow-inner">
             <Search size={18} className="text-[#889995] mr-3 shrink-0" />
             <input 
@@ -350,10 +359,7 @@ export default function GoalTracker() {
             />
           </div>
 
-          {/* Right: Filters & Actions */}
           <div className="flex flex-col sm:flex-row gap-4 items-stretch sm:items-center shrink-0">
-            
-            {/* Review Years Filter */}
             <div className="w-full sm:w-44 flex items-center bg-[var(--glass)] border border-[var(--border)] rounded-xl px-4 h-[52px] focus-within:border-[#fbbf24] transition-colors">
               <CalendarClock size={16} className="text-[#fbbf24] mr-3 shrink-0" />
               <input 
@@ -365,7 +371,6 @@ export default function GoalTracker() {
               />
             </div>
 
-            {/* Staff Filter */}
             <div className="w-full sm:w-44 flex items-center bg-[var(--glass)] border border-[var(--border)] rounded-xl px-4 h-[52px] focus-within:border-[#008254] transition-colors">
               <Users size={16} className="text-[#889995] mr-3 shrink-0" />
               <select 
@@ -378,7 +383,6 @@ export default function GoalTracker() {
               </select>
             </div>
 
-            {/* Action Buttons */}
             <div className="flex gap-3 w-full sm:w-auto">
               <button 
                 onClick={handleExportExcel} 
@@ -393,7 +397,6 @@ export default function GoalTracker() {
                 <Plus size={18} /> NEW PLAN
               </button>
             </div>
-            
           </div>
         </div>
       </div>
@@ -444,8 +447,12 @@ export default function GoalTracker() {
                       <td className="table-td"><span className={`pill ${isReviewing ? 'status-Review bg-[#fbbf24]/20 text-[#fbbf24]' : `status-${g.status}`}`}>{isReviewing ? 'Under Review' : g.status}</span></td>
                       <td className="table-td">
                         <div className="flex items-center justify-center gap-3">
-                          <button onClick={() => openEditForm(g)} className="text-[#60a5fa] hover:scale-110"><Pencil size={16}/></button>
-                          <button onClick={() => handleDeleteGoal(g)} className="text-[#f87171] hover:scale-110"><Trash2 size={16}/></button>
+                          {/* NEW: Comprehensive Report Button */}
+                          <button onClick={() => setActiveReportClient(g.clientId)} className="text-[#a78bfa] hover:scale-110 transition-transform bg-[#a78bfa]/10 p-1.5 rounded-lg border border-[#a78bfa]/30" title="Download Full Client Report">
+                            <FileText size={16}/>
+                          </button>
+                          <button onClick={() => openEditForm(g)} className="text-[#60a5fa] hover:scale-110 p-1.5"><Pencil size={16}/></button>
+                          <button onClick={() => handleDeleteGoal(g)} className="text-[#f87171] hover:scale-110 p-1.5"><Trash2 size={16}/></button>
                         </div>
                       </td>
                     </tr>
@@ -460,18 +467,13 @@ export default function GoalTracker() {
         </div>
       </div>
 
-      {/* --- RE-DESIGNED 2-COLUMN FORM OVERLAY --- */}
+      {/* --- FORM OVERLAY (HIDDEN IN COMPREHENSIVE VIEW) --- */}
       {showForm && (
         <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
           <div className="w-full max-w-7xl bg-[#0a1110] border border-white/10 rounded-[24px] flex flex-col h-full max-h-[92vh] shadow-[0_20px_80px_rgba(0,0,0,0.8)] animate-in zoom-in-95 duration-300 overflow-hidden relative">
-            
-            {/* 2-Column Layout */}
             <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
-              
               {/* LEFT: FORM (Scrollable) */}
               <div className="flex-1 lg:w-[65%] overflow-y-auto custom-scrollbar p-6 md:p-10 space-y-10 bg-[#0a1110]">
-                
-                {/* NEW TITLE PLACEMENT */}
                 <div className="flex items-center gap-5 pb-4">
                   <div className="w-14 h-14 rounded-2xl bg-[#008254]/20 flex items-center justify-center text-[#4ade80] shrink-0">
                     <Target size={28}/>
@@ -665,8 +667,6 @@ export default function GoalTracker() {
 
               {/* RIGHT: SUMMARY (Fixed/Sticky Sidebar) */}
               <div className="w-full lg:w-[35%] bg-[#060c0a] border-l border-white/5 flex flex-col shrink-0">
-                
-                {/* Right Side Header (Holds Close Button) */}
                 <div className="h-24 px-8 flex items-center justify-between border-b border-white/5 shrink-0">
                   <h3 className="text-sm font-black text-[#889995] uppercase tracking-widest">Live Gap Analysis</h3>
                   <button onClick={() => setShowForm(false)} className="w-10 h-10 flex items-center justify-center rounded-xl bg-white/5 text-white/50 hover:text-white hover:bg-white/10 transition-colors">
@@ -699,7 +699,6 @@ export default function GoalTracker() {
                   </div>
                 </div>
 
-                {/* Action Buttons Footer */}
                 <div className="p-6 border-t border-white/5 bg-[#050a09] shrink-0 flex flex-col gap-3">
                   <button onClick={handleSaveGoal} className="w-full py-4 rounded-xl font-black bg-[#008254] text-white hover:bg-[#00a369] transition-all shadow-[0_10px_20px_rgba(0,130,84,0.2)] hover:shadow-[0_10px_25px_rgba(0,130,84,0.4)] tracking-wide">
                     SAVE GOAL PLAN
@@ -708,15 +707,14 @@ export default function GoalTracker() {
                     CANCEL & DISCARD
                   </button>
                 </div>
-
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* --- PREVIEW MODAL (Exportable) --- */}
-      {showPreview && activeGoal && (() => {
+      {/* --- SINGLE GOAL PREVIEW MODAL --- */}
+      {showPreview && activeGoal && !activeReportClient && (() => {
         const pMath = calculateMath(activeGoal);
         const chartData = [
           { name: "SIP Growth", value: Math.round(pMath.sipMaturity), color: "#008254" },
@@ -731,16 +729,13 @@ export default function GoalTracker() {
               
               <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
                 <div>
-                  <h2 className="text-xl font-black text-[#008254] tracking-wide uppercase">Profile Preview</h2>
+                  <h2 className="text-xl font-black text-[#008254] tracking-wide uppercase">Goal Preview</h2>
                 </div>
                 <button onClick={() => setShowPreview(false)} className="text-white/40 hover:text-white hover:rotate-90 transition-all"><X size={28}/></button>
               </div>
 
-              {/* Scrollable container for the exported image */}
               <div className="overflow-y-auto flex-1 custom-scrollbar">
                 <div ref={printRef} className="p-8 md:p-10 bg-[#0a1110]">
-                  
-                  {/* --- EXPORT HEADER (Logo & Title) --- */}
                   <div className="flex justify-between items-center border-b border-white/10 pb-6 mb-8">
                     <img src="/FW_1_logo.png" alt="FideloWealth" className="h-10 object-contain" />
                     <div className="text-right">
@@ -749,9 +744,7 @@ export default function GoalTracker() {
                     </div>
                   </div>
 
-                  {/* STRICT FLEX LAYOUT FOR HTML2CANVAS */}
                   <div style={{ display: "flex", gap: "40px", alignItems: "flex-start", width: "100%" }}>
-                    
                     <div style={{ flex: "1.2", display: "flex", flexDirection: "column", gap: "32px", minWidth: 0 }}>
                       <div>
                         <h3 className="text-[11px] font-black text-[#008254] uppercase tracking-[1px] border-b border-white/10 pb-2 mb-4">Financial Snapshot</h3>
@@ -794,14 +787,11 @@ export default function GoalTracker() {
 
                     <div style={{ flex: "0.8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "var(--glass)", border: "1px solid var(--border)", borderRadius: "24px", padding: "32px", minWidth: 0 }}>
                       <div style={{ width: "280px", height: "280px", position: "relative" }}>
-                        
-                        {/* STRICT SIZE CHART FOR EXPORT */}
                         <PieChart width={280} height={280}>
                           <Pie data={chartData} cx="50%" cy="50%" innerRadius={95} outerRadius={135} dataKey="value" stroke="none" paddingAngle={2} isAnimationActive={false}>
                             {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
                           </Pie>
                         </PieChart>
-                        
                         <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                           <span className="text-4xl font-black text-[#4ade80] drop-shadow-[0_0_10px_rgba(74,222,128,0.4)]">{pct}%</span>
                           <span className="text-[10px] font-black text-[#889995] uppercase tracking-widest mt-1">Coverage</span>
@@ -816,11 +806,9 @@ export default function GoalTracker() {
                     </div>
                   </div>
 
-                  {/* --- EXPORT FOOTER (Socials & Disclaimer) --- */}
                   <div className="mt-12 pt-6 border-t border-white/10">
                     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "24px", marginBottom: "24px", color: "#c8d4d0", fontSize: "11px", fontWeight: 600 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                        {/* Branded Social Icons matching reference exactly */}
                         <div className="bg-[#1877F2]/15 text-[#1877F2] p-1.5 rounded-full"><Facebook size={14}/></div>
                         <div className="bg-[#E1306C]/15 text-[#E1306C] p-1.5 rounded-full"><Instagram size={14}/></div>
                         <div className="bg-[#1DA1F2]/15 text-[#1DA1F2] p-1.5 rounded-full"><Twitter size={14}/></div>
@@ -831,21 +819,208 @@ export default function GoalTracker() {
                       <div style={{ display: "flex", alignItems: "center", gap: "12px" }}><div className="bg-[#4ade80]/15 text-[#4ade80] p-1.5 rounded-full"><Phone size={14}/></div> 9840566166</div>
                     </div>
                     <p className="text-[9px] text-[#889995] text-center leading-relaxed max-w-4xl mx-auto">
-                      Disclaimer: Mutual fund investments are subject to market risks. Read all scheme-related documents carefully. 
-                      The projected values are strictly for illustrative and planning purposes based on assumed growth rates and do not guarantee future returns. 
-                      Past performance is not indicative of future results.
+                      Disclaimer: Mutual fund investments are subject to market risks. Read all scheme-related documents carefully. The projected values are strictly for illustrative and planning purposes based on assumed growth rates and do not guarantee future returns. Past performance is not indicative of future results.
                     </p>
                   </div>
                 </div>
               </div>
 
-              {/* Fixed Actions Footer */}
               <div className="p-6 border-t border-white/5 flex justify-end gap-4 bg-black/20 shrink-0">
-                <button onClick={handleDownloadImage} disabled={exporting} className="flex items-center gap-2 px-6 py-3 rounded-xl bg-[#008254] text-white text-xs font-black hover:bg-[#00a369] transition-all disabled:opacity-50">
+                <button onClick={() => captureAndExport(printRef, `${activeGoal?.clientName.replace(/\s+/g, '_')}_Goal_Plan.png`)} disabled={exporting} className="flex items-center gap-2 px-6 py-3 rounded-xl bg-[#008254] text-white text-xs font-black hover:bg-[#00a369] transition-all disabled:opacity-50">
                   {exporting ? <Clock size={16} className="animate-spin" /> : <ImageIcon size={16} />}
                   {exporting ? "PROCESSING..." : "DOWNLOAD IMAGE"}
                 </button>
                 <button onClick={() => setShowPreview(false)} className="px-6 py-3 rounded-xl bg-transparent border border-white/20 text-[#889995] text-xs font-bold hover:text-white hover:border-white transition-all">
+                  CLOSE
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+
+      {/* --- NEW: COMPREHENSIVE CLIENT REPORT MODAL --- */}
+      {activeReportClient && (() => {
+        // Fetch all goals for this specific client
+        const clientGoals = allGoals.filter(g => g.clientId === activeReportClient);
+        const clientName = clientGoals[0]?.clientName || "Client Report";
+
+        // Aggregate Math
+        let totalPV = 0, totalFV = 0, totalMaturity = 0, totalReqSip = 0, totalReqLs = 0, totalActSip = 0, totalActLs = 0;
+        
+        const goalDetails = clientGoals.map(g => {
+          const m = calculateMath(g);
+          totalPV += Number(g.pv) || 0;
+          totalFV += m.goalFV;
+          totalMaturity += m.projectedMaturity;
+          totalReqSip += m.reqSIP;
+          totalReqLs += m.reqLS;
+          totalActSip += m.totalSIP;
+          totalActLs += m.totalLS;
+          return { ...g, math: m };
+        });
+
+        const totalGap = Math.max(0, totalFV - totalMaturity);
+        const overallCoverage = totalFV > 0 ? Math.min(100, Math.round((totalMaturity / totalFV) * 100)) : 0;
+
+        const aggChartData = [
+          { name: "Projected Maturity", value: Math.round(totalMaturity), color: "#008254" },
+          { name: "Overall Shortfall", value: Math.round(totalGap), color: "rgba(255,255,255,0.05)" }
+        ];
+
+        // Gather all unique sub-investments configured across all goals
+        const allDeployments = [];
+        clientGoals.forEach(g => {
+           (g.investments || []).forEach(inv => {
+             if (inv.amount > 0 && inv.fund) {
+               allDeployments.push({ ...inv, goalName: g.goalType === "Custom..." ? g.customGoal : g.goalType });
+             }
+           });
+        });
+
+        return (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/85 backdrop-blur-lg">
+            <div className="w-full max-w-5xl bg-[#0a1110] border border-[var(--border)] rounded-[28px] flex flex-col max-h-[90vh] shadow-[0_40px_100px_rgba(0,0,0,0.8)] relative overflow-hidden">
+              
+              <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
+                <div>
+                  <h2 className="text-xl font-black text-[#a78bfa] tracking-wide uppercase">Comprehensive Goal Report</h2>
+                </div>
+                <button onClick={() => setActiveReportClient(null)} className="text-white/40 hover:text-white hover:rotate-90 transition-all"><X size={28}/></button>
+              </div>
+
+              <div className="overflow-y-auto flex-1 custom-scrollbar">
+                <div ref={reportPrintRef} className="p-8 md:p-10 bg-[#0a1110]">
+                  
+                  {/* HEADER */}
+                  <div className="flex justify-between items-center border-b border-white/10 pb-6 mb-8">
+                    <img src="/FW_1_logo.png" alt="FideloWealth" className="h-10 object-contain" />
+                    <div className="text-right">
+                      <h2 className="text-2xl font-black text-[#a78bfa] tracking-wide uppercase">{clientName}</h2>
+                      <p className="text-[10px] font-black text-[#889995] uppercase tracking-[2px] mt-1">Master Financial Plan</p>
+                    </div>
+                  </div>
+
+                  {/* EXECUTIVE SUMMARY */}
+                  <div style={{ display: "flex", gap: "32px", alignItems: "center", marginBottom: "40px" }}>
+                    <div style={{ flex: "1" }} className="grid grid-cols-2 gap-4">
+                      <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+                        <label className="text-[9px] font-black text-[#889995] uppercase">Total Present Cost</label>
+                        <div className="text-2xl font-bold text-white mt-1">₹{Math.round(totalPV).toLocaleString('en-IN')}</div>
+                      </div>
+                      <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+                        <label className="text-[9px] font-black text-[#889995] uppercase">Total Target Wealth</label>
+                        <div className="text-2xl font-black text-[#fbbf24] mt-1">₹{Math.round(totalFV).toLocaleString('en-IN')}</div>
+                      </div>
+                      <div className="bg-[#a78bfa]/10 border border-[#a78bfa]/30 rounded-2xl p-5">
+                        <label className="text-[9px] font-black text-[#889995] uppercase">Overall Funding Gap</label>
+                        <div className="text-2xl font-black text-[#f87171] mt-1">₹{Math.round(totalGap).toLocaleString('en-IN')}</div>
+                      </div>
+                      <div className="bg-[#008254]/10 border border-[#008254]/30 rounded-2xl p-5">
+                        <label className="text-[9px] font-black text-[#889995] uppercase">Total Matured Wealth</label>
+                        <div className="text-2xl font-black text-[#4ade80] mt-1">₹{Math.round(totalMaturity).toLocaleString('en-IN')}</div>
+                      </div>
+                    </div>
+                    
+                    <div style={{ width: "220px", height: "220px", position: "relative", flexShrink: 0 }} className="bg-[var(--glass)] border border-white/10 rounded-2xl p-4 flex items-center justify-center">
+                      <PieChart width={180} height={180}>
+                        <Pie data={aggChartData} cx="50%" cy="50%" innerRadius={65} outerRadius={85} dataKey="value" stroke="none" paddingAngle={2} isAnimationActive={false}>
+                          {aggChartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                        </Pie>
+                      </PieChart>
+                      <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                        <span className="text-3xl font-black text-[#4ade80] drop-shadow-[0_0_10px_rgba(74,222,128,0.4)]">{overallCoverage}%</span>
+                        <span className="text-[9px] font-black text-[#889995] uppercase tracking-widest mt-1">Funded</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* GOAL BREAKDOWN */}
+                  <h3 className="text-[11px] font-black text-[#a78bfa] uppercase tracking-[1px] border-b border-white/10 pb-2 mb-6">Individual Goal Analysis ({goalDetails.length})</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                    {goalDetails.map(g => {
+                      const goalPct = Math.min(100, Math.round((g.math.projectedMaturity / g.math.goalFV) * 100)) || 0;
+                      return (
+                        <div key={g.id} className="bg-black/40 border border-white/5 rounded-2xl p-5">
+                          <div className="flex justify-between items-center mb-4">
+                             <div>
+                               <h4 className="text-sm font-black text-[#c8d4d0] uppercase">{g.goalType === "Custom..." ? g.customGoal : g.goalType}</h4>
+                               <p className="text-[9px] font-bold text-[#889995] mt-1 uppercase tracking-wider">{g.years} Yrs · Due {format(addYears(parseISO(g.date), Number(g.years)), "MMM yyyy")}</p>
+                             </div>
+                             <div className="text-right">
+                                <span className="text-lg font-black text-[#fbbf24]">₹{Math.round(g.math.goalFV).toLocaleString('en-IN')}</span>
+                                <p className="text-[9px] font-bold text-[#889995] uppercase">Target Value</p>
+                             </div>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-4 mb-4 bg-white/5 p-3 rounded-xl border border-white/5">
+                             <div><span className="text-[9px] text-[#889995] font-bold uppercase block">Req SIP / LS</span><span className="text-xs font-bold text-white">₹{Math.round(g.math.reqSIP).toLocaleString()} / ₹{Math.round(g.math.reqLS).toLocaleString()}</span></div>
+                             <div><span className="text-[9px] text-[#889995] font-bold uppercase block">Actual SIP / LS</span><span className="text-xs font-bold text-[#4ade80]">₹{Math.round(g.math.totalSIP).toLocaleString()} / ₹{Math.round(g.math.totalLS).toLocaleString()}</span></div>
+                          </div>
+                          
+                          <div>
+                            <div className="flex justify-between text-[10px] font-bold mb-1">
+                              <span className="text-[#889995]">Progress: <span className="text-white">₹{Math.round(g.math.projectedMaturity).toLocaleString()}</span></span>
+                              <span className={g.math.gap <= 0 ? "text-[#4ade80]" : "text-[#f87171]"}>{goalPct}%</span>
+                            </div>
+                            <div className="w-full bg-white/5 rounded-full h-1.5 overflow-hidden">
+                              <div className="h-full bg-[#a78bfa]" style={{ width: `${goalPct}%` }} />
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {/* ACTIVE DEPLOYMENTS LIST */}
+                  {allDeployments.length > 0 && (
+                    <>
+                      <h3 className="text-[11px] font-black text-[#a78bfa] uppercase tracking-[1px] border-b border-white/10 pb-2 mb-4">Current Configurations</h3>
+                      <div className="bg-[var(--glass)] border border-white/10 rounded-2xl p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {allDeployments.map((inv, i) => (
+                          <div key={i} className="flex justify-between items-center bg-black/40 border border-white/5 rounded-lg px-4 py-3 break-inside-avoid">
+                            <div className="min-w-0 pr-4 flex flex-col justify-center">
+                                <div>
+                                    <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded mr-2 shrink-0 ${inv.type === 'SIP' ? 'bg-[#008254]/20 text-[#4ade80]' : 'bg-[#3b82f6]/20 text-[#60a5fa]'}`}>{inv.type}</span>
+                                </div>
+                                <span className="text-xs font-semibold text-[#c8d4d0] break-words block mt-1.5 leading-tight">{inv.fund}</span>
+                                <span className="text-[9px] text-[#889995] italic block mt-0.5">Linked to: {inv.goalName}</span>
+                            </div>
+                            <span className="text-sm font-black text-white shrink-0">₹{Number(inv.amount).toLocaleString('en-IN')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  {/* FOOTER */}
+                  <div className="mt-12 pt-6 border-t border-white/10">
+                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "24px", marginBottom: "24px", color: "#c8d4d0", fontSize: "11px", fontWeight: 600 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                        <div className="bg-[#1877F2]/15 text-[#1877F2] p-1.5 rounded-full"><Facebook size={14}/></div>
+                        <div className="bg-[#E1306C]/15 text-[#E1306C] p-1.5 rounded-full"><Instagram size={14}/></div>
+                        <div className="bg-[#1DA1F2]/15 text-[#1DA1F2] p-1.5 rounded-full"><Twitter size={14}/></div>
+                        <span style={{ marginLeft: "4px" }}>fidelowealth</span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}><div className="bg-[#60a5fa]/15 text-[#60a5fa] p-1.5 rounded-full"><Globe size={14}/></div> www.fidelowealth.com</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}><div className="bg-[#ea4335]/15 text-[#ea4335] p-1.5 rounded-full"><Mail size={14}/></div> ask@fidelowealth.com</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}><div className="bg-[#4ade80]/15 text-[#4ade80] p-1.5 rounded-full"><Phone size={14}/></div> 9840566166</div>
+                    </div>
+                    <p className="text-[9px] text-[#889995] text-center leading-relaxed max-w-4xl mx-auto">
+                      Disclaimer: Mutual fund investments are subject to market risks. Read all scheme-related documents carefully. The projected values are strictly for illustrative and planning purposes based on assumed growth rates and do not guarantee future returns. Past performance is not indicative of future results.
+                    </p>
+                  </div>
+
+                </div>
+              </div>
+
+              <div className="p-6 border-t border-white/5 flex justify-end gap-4 bg-black/20 shrink-0">
+                <button onClick={() => captureAndExport(reportPrintRef, `${clientName.replace(/\s+/g, '_')}_Master_Plan.png`)} disabled={exporting} className="flex items-center gap-2 px-6 py-3 rounded-xl bg-[#a78bfa] text-black text-xs font-black hover:bg-[#8b5cf6] transition-all disabled:opacity-50">
+                  {exporting ? <Clock size={16} className="animate-spin" /> : <FileText size={16} />}
+                  {exporting ? "PROCESSING..." : "DOWNLOAD FULL REPORT"}
+                </button>
+                <button onClick={() => setActiveReportClient(null)} className="px-6 py-3 rounded-xl bg-transparent border border-white/20 text-[#889995] text-xs font-bold hover:text-white hover:border-white transition-all">
                   CLOSE
                 </button>
               </div>

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check, ListTodo, Info, Save, X, Target } from "lucide-react";
 
 import { db } from "../firebase"; 
-import { collection, query, onSnapshot, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, where, getDocs } from "firebase/firestore";
+import { collection, query, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, getDocs } from "firebase/firestore";
 
 import ClientImport from "@/components/clients/ClientImport.jsx";
 import ClientForm from "@/components/clients/ClientForm.jsx";
@@ -23,6 +23,24 @@ const CATEGORY_ACTIONS = {
 const PRIORITIES = ["High", "Medium", "Low"];
 const CHANNELS = ["Call", "WhatsApp", "Email", "Meeting", "In-Person", "Branch Visit"];
 const SIP_ADD_ACTIONS = ["SIP Registration", "SIP Top-up", "SIP Restart"];
+
+// --- CACHING HELPERS (Eliminates 500+ Reads per load) ---
+const getLocalCache = (key) => {
+  try {
+    const cached = localStorage.getItem(key);
+    if (!cached) return null;
+    const { data, timestamp } = JSON.parse(cached);
+    // Expire cache after 24 hours (Optional, but good practice)
+    if (Date.now() - timestamp > 24 * 60 * 60 * 1000) return null;
+    return data;
+  } catch(e) { return null; }
+};
+
+const setLocalCache = (key, data) => {
+  try {
+    localStorage.setItem(key, JSON.stringify({ data, timestamp: Date.now() }));
+  } catch(e) { console.error("Cache limit reached"); }
+};
 
 // --- DATE FORMAT HELPERS FOR HTML INPUTS ---
 const toInputDate = (dateStr) => {
@@ -91,10 +109,8 @@ function numberToWords(num) {
   return convert(parseInt(num)) + " Rupees Only";
 }
 
-// --- Helper: Parse the structured text string to find cancelled items ---
 function parseTransactionItems(rawString) {
   if (!rawString) return [{ productName: "", amount: "", type: "SIP" }];
-  
   const lines = rawString.split("\n");
   const parsed = lines.map(line => {
     const match = line.match(/^(.*?)(?:\s*\(₹([\d.,]+)\))?(?:\s*\[(.*?)\])?$/);
@@ -107,27 +123,19 @@ function parseTransactionItems(rawString) {
     }
     return { productName: line.trim(), amount: "", type: "SIP" };
   }).filter(i => i.productName !== "");
-  
   return parsed.length > 0 ? parsed : [{ productName: "", amount: "", type: "SIP" }];
 }
 
-// --- GLOBAL MEMORY CACHE (0 READS ON TAB SWITCH) ---
-let globalClients = [];
-let globalTasks = [];
-let isListeningC = false;
-let isListeningT = false;
-let subsC = new Set();
-let subsT = new Set();
-
 export default function Clients() {
-  const [clients, setClients] = useState(globalClients);
-  const [tasks, setTasks] = useState(globalTasks);
+  const [clients, setClients] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
   const [editClient, setEditClient] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
-  const [loading, setLoading] = useState(globalClients.length === 0);
+  const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   
   const [expandedInv, setExpandedInv] = useState(null);
   const [expandedGroup, setExpandedGroup] = useState(null);
@@ -140,7 +148,8 @@ export default function Clients() {
   const [taskFilter, setTaskFilter] = useState("All");
 
   const [showFilters, setShowFilters] = useState(false);
-  const [filters, setFilters] = useState({ rm: "", tax: "", holding: "" });
+  // NEW: Added sipStatus to filters state
+  const [filters, setFilters] = useState({ rm: "", tax: "", holding: "", sipStatus: "" });
 
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -153,44 +162,50 @@ export default function Clients() {
   const [editProductInput, setEditProductInput] = useState("");
   const [savingTaskEdit, setSavingTaskEdit] = useState(false);
 
-  // --- SMART CACHED FETCH ---
-  useEffect(() => {
-    subsC.add(setClients);
-    subsT.add(setTasks);
+  // Helper to sync both React State and LocalStorage instantly
+  const updateClientsState = (newClients) => {
+    setClients(newClients);
+    setLocalCache("fw_clients", newClients);
+  };
+  const updateTasksState = (newTasks) => {
+    setTasks(newTasks);
+    setLocalCache("fw_tasks", newTasks);
+  };
 
-    if (!isListeningC) {
-      isListeningC = true;
-      onSnapshot(query(collection(db, "clients"), orderBy("client_name")), snap => {
-        globalClients = snap.docs.map(d => ({id: d.id, ...d.data()}));
-        subsC.forEach(cb => cb(globalClients));
-        setLoading(false);
-      });
-    } else { setLoading(false); }
-
-    if (!isListeningT) {
-      isListeningT = true;
-      onSnapshot(query(collection(db, "tasks"), orderBy("entry_date", "desc")), snap => {
-        globalTasks = snap.docs.map(d => ({id: d.id, ...d.data()}));
-        subsT.forEach(cb => cb(globalTasks));
-      });
+  // --- LOCAL-FIRST DATA LOAD ---
+  const fetchFreshData = async (silent = false) => {
+    if (!silent) setIsRefreshing(true);
+    try {
+      const [cSnap, tSnap] = await Promise.all([
+        getDocs(query(collection(db, "clients"), orderBy("client_name"))),
+        getDocs(query(collection(db, "tasks"), orderBy("entry_date", "desc")))
+      ]);
+      const fetchedClients = cSnap.docs.map(d => ({id: d.id, ...d.data()}));
+      const fetchedTasks = tSnap.docs.map(d => ({id: d.id, ...d.data()}));
+      
+      updateClientsState(fetchedClients);
+      updateTasksState(fetchedTasks);
+    } catch(e) {
+      console.error("Failed to fetch fresh data:", e);
+    } finally {
+      setLoading(false);
+      setIsRefreshing(false);
     }
+  };
 
-    return () => {
-      subsC.delete(setClients);
-      subsT.delete(setTasks);
-    }
-  }, []);
-
-  // --- FIX: INSTANT SYNC EFFECT FOR SELECTED CLIENT ---
   useEffect(() => {
-    if (selected) {
-      const updatedClient = clients.find(c => c.id === selected.id);
-      if (updatedClient && JSON.stringify(updatedClient) !== JSON.stringify(selected)) {
-        setSelected(updatedClient);
-      }
+    const cachedC = getLocalCache("fw_clients");
+    const cachedT = getLocalCache("fw_tasks");
+
+    if (cachedC && cachedT) {
+      setClients(cachedC);
+      setTasks(cachedT);
+      setLoading(false);
+    } else {
+      fetchFreshData(); // Only costs reads if cache is entirely empty
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clients]);
+  }, []);
 
   const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
   const uniqueHoldings = [...new Set(clients.map(c => c.holding_nature).filter(v => v && v !== "-"))].sort();
@@ -206,7 +221,13 @@ export default function Clients() {
     const matchesHolding = filters.holding === "" || c.holding_nature === filters.holding;
     const matchesTax = filters.tax === "" || (c.tax_status && c.tax_status.includes(filters.tax));
 
-    return matchesSearch && matchesRM && matchesHolding && matchesTax;
+    // NEW: SIP Status Logic
+    const sipTotal = getSIPTotal(c.investments);
+    const matchesSipStatus = filters.sipStatus === "" || 
+      (filters.sipStatus === "SIP" && sipTotal > 0) || 
+      (filters.sipStatus === "Non-SIP" && sipTotal === 0);
+
+    return matchesSearch && matchesRM && matchesHolding && matchesTax && matchesSipStatus;
   });
 
   const groupedClients = Object.values(filtered.reduce((acc, c) => {
@@ -222,7 +243,6 @@ export default function Clients() {
   const clientTasks = clientTasksRaw.filter(t => taskFilter === "All" || t.status === taskFilter);
 
   const toggleBulkMode = () => { setIsBulkMode(!isBulkMode); setSelectedIds(new Set()); };
-
   const toggleSelection = (id) => {
     const newSet = new Set(selectedIds);
     if (newSet.has(id)) newSet.delete(id); else newSet.add(id);
@@ -235,11 +255,13 @@ export default function Clients() {
     else setSelectedIds(new Set(filtered.map(c => c.id))); 
   };
 
+  // --- MUTATIONS: Update DB and Cache simultaneously ---
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
     if (!window.confirm(`Are you sure you want to permanently delete ${selectedIds.size} selected clients?`)) return;
     try {
       for (const id of selectedIds) { await deleteDoc(doc(db, "clients", id)); }
+      updateClientsState(clients.filter(c => !selectedIds.has(c.id)));
       setSelectedIds(new Set()); setIsBulkMode(false);
       if (selected && selectedIds.has(selected.id)) setSelected(null);
     } catch (error) { console.error("Error deleting clients:", error); }
@@ -247,25 +269,34 @@ export default function Clients() {
 
   const handleDelete = async (client) => {
     if (!window.confirm(`Delete "${client.client_name}" permanently?`)) return;
-    try { await deleteDoc(doc(db, "clients", client.id)); if (selected?.id === client.id) setSelected(null); } 
-    catch (error) { console.error("Error deleting client:", error); }
+    try { 
+      await deleteDoc(doc(db, "clients", client.id)); 
+      updateClientsState(clients.filter(c => c.id !== client.id));
+      if (selected?.id === client.id) setSelected(null); 
+    } catch (error) { console.error("Error deleting client:", error); }
   };
 
   const handleDeleteTask = async (taskId, e) => {
     e.stopPropagation();
     if (!window.confirm("Are you sure you want to delete this task?")) return;
-    try { await deleteDoc(doc(db, "tasks", taskId)); } 
-    catch (error) { console.error("Error deleting task:", error); }
+    try { 
+      await deleteDoc(doc(db, "tasks", taskId)); 
+      updateTasksState(tasks.filter(t => t.id !== taskId));
+    } catch (error) { console.error("Error deleting task:", error); }
   };
 
   const handleSave = async (data) => {
     try {
-      if (data.id) { await updateDoc(doc(db, "clients", data.id), data); } 
-      else {
+      if (data.id) { 
+        await updateDoc(doc(db, "clients", data.id), data); 
+        updateClientsState(clients.map(c => c.id === data.id ? data : c));
+        if (selected?.id === data.id) setSelected(data);
+      } else {
         const tax = data.tax_status || "-";
         const exists = clients.some(c => c.client_code === data.client_code && (c.tax_status || "-") === tax);
         if (exists) { alert("A client profile with this Code and Tax Status already exists!"); return; }
-        await addDoc(collection(db, "clients"), { ...data, created_at: serverTimestamp() });
+        const docRef = await addDoc(collection(db, "clients"), { ...data, created_at: serverTimestamp() });
+        updateClientsState([...clients, { id: docRef.id, ...data }]);
       }
       setShowForm(false); setEditClient(null);
     } catch (error) { console.error("Error saving client:", error); }
@@ -273,21 +304,18 @@ export default function Clients() {
 
   const handleTaskStatusUpdate = async (taskId, newStatus, fullTaskData) => {
     try {
-      const taskRef = doc(db, "tasks", taskId);
       const update = { status: newStatus };
       if (newStatus === "Completed") update.closure_date = format(new Date(), "yyyy-MM-dd");
-      await updateDoc(taskRef, update);
+      await updateDoc(doc(db, "tasks", taskId), update);
+      
+      updateTasksState(tasks.map(t => t.id === taskId ? { ...t, ...update } : t));
 
       if (newStatus === "Completed" && fullTaskData && fullTaskData.client_code) {
-        const clientsRef = collection(db, "clients");
-        const q = query(clientsRef, where("client_code", "==", fullTaskData.client_code));
-        const clientSnapshot = await getDocs(q);
-        
-        if (!clientSnapshot.empty) {
-          const clientDoc = clientSnapshot.docs[0];
-          const clientData = clientDoc.data();
-          const targetKey = Object.keys(clientData).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
-          let currentPortfolio = clientData[targetKey] || [];
+        const targetClient = clients.find(c => c.client_code === fullTaskData.client_code);
+        if (targetClient) {
+          const targetKey = Object.keys(targetClient).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
+          let currentPortfolio = targetClient[targetKey] || [];
+          let modified = false;
 
           if (fullTaskData.action === "SIP Cancellation") {
             const cancelledSchemes = parseTransactionItems(fullTaskData.product_name).map(i => i.productName.toLowerCase().trim());
@@ -297,11 +325,11 @@ export default function Clients() {
                 return !cancelledSchemes.some(cancelledName => invName.includes(cancelledName) || cancelledName.includes(invName));
               });
               if (currentPortfolio.length !== updatedPortfolio.length) {
-                await updateDoc(doc(db, "clients", clientDoc.id), { [targetKey]: updatedPortfolio });
+                currentPortfolio = updatedPortfolio;
+                modified = true;
               }
             }
-          } 
-          else if (fullTaskData.action === "SIP Registration") { 
+          } else if (fullTaskData.action === "SIP Registration") { 
             const newItems = parseTransactionItems(fullTaskData.product_name).filter(i => i.productName && i.amount);
             if (newItems.length > 0) {
               const addedInvestments = newItems.map(item => ({
@@ -310,16 +338,22 @@ export default function Clients() {
                 folio_number: "Pending Folio", xsip_reg_no: `TEMP-${Math.floor(100000 + Math.random() * 900000)}`,
                 start_date: format(new Date(), "dd-MMM-yyyy"), end_date: "-", type: item.type || "SIP"
               }));
-              const updatedPortfolio = [...currentPortfolio, ...addedInvestments];
-              await updateDoc(doc(db, "clients", clientDoc.id), { [targetKey]: updatedPortfolio });
+              currentPortfolio = [...currentPortfolio, ...addedInvestments];
+              modified = true;
             }
+          }
+
+          if (modified) {
+            await updateDoc(doc(db, "clients", targetClient.id), { [targetKey]: currentPortfolio });
+            const finalClientObj = { ...targetClient, [targetKey]: currentPortfolio };
+            updateClientsState(clients.map(c => c.id === targetClient.id ? finalClientObj : c));
+            if (selected?.id === targetClient.id) setSelected(finalClientObj);
           }
         }
       }
     } catch (error) { console.error("Error updating task status:", error); }
   };
 
-  // --- SAVE TASK EDIT ---
   const handleSaveTaskEdit = async (e) => {
     e.stopPropagation();
     setSavingTaskEdit(true);
@@ -343,26 +377,18 @@ export default function Clients() {
         finalAmount = editTaskForm.amount ? parseFloat(editTaskForm.amount) : null;
       }
 
-      const updateData = {
-        ...editTaskForm,
-        product_name: finalProductString,
-        amount: finalAmount
-      };
-
+      const updateData = { ...editTaskForm, product_name: finalProductString, amount: finalAmount };
       if (updateData.status === "Completed" && !updateData.closure_date) {
          updateData.closure_date = format(new Date(), "yyyy-MM-dd");
       }
 
       await updateDoc(doc(db, "tasks", editingTaskId), updateData);
+      updateTasksState(tasks.map(t => t.id === editingTaskId ? updateData : t));
       setEditingTaskId(null);
-    } catch (e) {
-      console.error("Error saving task:", e);
-    } finally {
-      setSavingTaskEdit(false);
-    }
+    } catch (e) { console.error("Error saving task:", e); } 
+    finally { setSavingTaskEdit(false); }
   };
 
-  // --- SIP EDITING & DELETING (Instant Sync Logic) ---
   const handleSaveInvestment = async (e) => {
     e.preventDefault();
     try {
@@ -372,8 +398,9 @@ export default function Clients() {
       delete finalFormToSave.originalIndex;
       updatedPortfolio[editingInv] = finalFormToSave;
       
-      // Optimistic UI Update (Shows Instantly)
-      setSelected({ ...selected, [targetKey]: updatedPortfolio });
+      const updatedClient = { ...selected, [targetKey]: updatedPortfolio };
+      setSelected(updatedClient);
+      updateClientsState(clients.map(c => c.id === selected.id ? updatedClient : c));
 
       await updateDoc(doc(db, "clients", selected.id), { [targetKey]: updatedPortfolio });
       setEditingInv(null); setExpandedInv(null);
@@ -387,8 +414,9 @@ export default function Clients() {
       const updatedPortfolio = [...(selected[targetKey] || [])];
       updatedPortfolio.splice(index, 1);
       
-      // Optimistic UI Update (Shows Instantly)
-      setSelected({ ...selected, [targetKey]: updatedPortfolio });
+      const updatedClient = { ...selected, [targetKey]: updatedPortfolio };
+      setSelected(updatedClient);
+      updateClientsState(clients.map(c => c.id === selected.id ? updatedClient : c));
 
       await updateDoc(doc(db, "clients", selected.id), { [targetKey]: updatedPortfolio });
       setEditingInv(null); setExpandedInv(null);
@@ -465,8 +493,8 @@ export default function Clients() {
           <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>{clients.length} profiles / {groupedClients.length} unique names</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => {}} className="p-2 rounded-xl transition-colors" style={{ background: "var(--glass)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
-            <RefreshCw className="w-4 h-4" />
+          <button onClick={() => fetchFreshData()} className="p-2 rounded-xl transition-colors hover:bg-white/10" style={{ background: "var(--glass)", border: "1px solid var(--border)", color: "var(--text-muted)" }} title="Fetch latest database updates">
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-brand-green' : ''}`} />
           </button>
           <button onClick={() => setShowImport(v => !v)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all" style={{ background: "var(--glass)", border: "1px solid var(--brand-green)", color: "var(--brand-green)" }}>
             <Upload className="w-4 h-4" /> Import Excel
@@ -477,7 +505,7 @@ export default function Clients() {
         </div>
       </div>
 
-      {showImport && <ClientImport onImportDone={() => setShowImport(false)} onClose={() => setShowImport(false)} />}
+      {showImport && <ClientImport onImportDone={() => { setShowImport(false); fetchFreshData(); }} onClose={() => setShowImport(false)} />}
       {showForm && <ClientForm client={editClient} onSave={handleSave} onClose={closeForm} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -521,12 +549,21 @@ export default function Clients() {
                   <div className="flex items-center justify-between mb-3 border-b border-white/10 pb-2">
                     <p className="text-xs font-bold uppercase tracking-wider text-white">Filters</p>
                     {activeFilterCount > 0 && (
-                      <button onClick={() => setFilters({rm: "", tax: "", holding: ""})} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold">
+                      <button onClick={() => setFilters({rm: "", tax: "", holding: "", sipStatus: ""})} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold">
                         <XCircle className="w-3 h-3" /> Clear
                       </button>
                     )}
                   </div>
                   <div className="space-y-4">
+                    {/* NEW: SIP STATUS FILTER */}
+                    <div>
+                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">SIP Status</label>
+                      <select value={filters.sipStatus} onChange={e => setFilters({...filters, sipStatus: e.target.value})} className="w-full bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none">
+                        <option value="">All Clients</option>
+                        <option value="SIP">Active SIP Clients</option>
+                        <option value="Non-SIP">Non-SIP Clients</option>
+                      </select>
+                    </div>
                     <div>
                       <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">RM Assigned</label>
                       <select value={filters.rm} onChange={e => setFilters({...filters, rm: e.target.value})} className="w-full bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none">

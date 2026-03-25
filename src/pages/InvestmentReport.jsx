@@ -3,7 +3,7 @@ import { format, parseISO, subMonths } from "date-fns";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ComposedChart
 } from "recharts";
-import { RefreshCw, Save, Pencil, LineChart as ChartIcon, Users, Wallet, Database, Activity, CalendarClock } from "lucide-react";
+import { RefreshCw, Save, Pencil, LineChart as ChartIcon, Users, Wallet, Database, Activity, CalendarClock, TrendingUp, TrendingDown } from "lucide-react";
 import * as XLSX from "xlsx";
 
 // Firebase Imports
@@ -71,7 +71,7 @@ function parseTransactionItems(rawString) {
 }
 
 export default function InvestmentReport() {
-  const [activeTab, setActiveTab] = useState("aum");
+  const [activeTab, setActiveTab] = useState("totalsip"); 
   const [completedTasks, setCompletedTasks] = useState([]);
   const [clients, setClients] = useState([]);
   const [monthlyStats, setMonthlyStats] = useState([]);
@@ -302,6 +302,88 @@ export default function InvestmentReport() {
   }, [clients, completedTasks]);
 
 
+  // --- NEW: TOTAL LIVE SIP DASHBOARD ENGINE ---
+  const totalSipData = useMemo(() => {
+    const todayStr = format(new Date(), "yyyy-MM-dd");
+    const currentMonthStr = format(new Date(), "yyyy-MM");
+
+    let liveTotalSip = 0;
+    clients.forEach(c => {
+      const targetKey = Object.keys(c).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
+      const invs = c[targetKey] || [];
+      invs.forEach(inv => {
+        if (inv.type === "SIP" || inv.frequency_type === "Monthly") {
+          liveTotalSip += Number(String(inv.installment_amount).replace(/,/g, '')) || 0;
+        }
+      });
+    });
+
+    let todayNewSip = 0;
+    let todayCeasedSip = 0;
+    let monthCeasedSip = 0;
+    const changeLog = [];
+
+    completedTasks.forEach(task => {
+      const isCreate = SIP_CREATE_ACTIONS.includes(task.action);
+      const isCease = SIP_CEASE_ACTIONS.includes(task.action);
+      const isHybrid = task.action === "Lumpsum & SIP";
+
+      if (!isCreate && !isCease && !isHybrid) return;
+
+      let sAmt = 0;
+      let cAmt = 0;
+
+      let taskAmt = Number(task.amount) || 0;
+      if (taskAmt === 0 && task.product_name) {
+        const parsed = parseTransactionItems(task.product_name);
+        parsed.forEach(item => {
+          if (item.type === "SIP" || !item.type || isCreate || isCease) {
+            const amt = Number(item.amount) || 0;
+            if (isCease) cAmt += amt;
+            else sAmt += amt;
+          }
+        });
+      } else {
+        if (isCease) cAmt += taskAmt;
+        else sAmt += taskAmt;
+      }
+
+      const dateStr = task.closure_date || task.entry_date || "";
+
+      // Daily Activity Checks
+      if (dateStr === todayStr) {
+        todayNewSip += sAmt;
+        todayCeasedSip += cAmt;
+      }
+
+      // Monthly Projections Check
+      if (dateStr.startsWith(currentMonthStr)) {
+        monthCeasedSip += cAmt;
+      }
+
+      // Change Log Addition
+      if (sAmt > 0 || cAmt > 0) {
+        changeLog.push({
+          date: dateStr,
+          clientName: task.client_name || task.client_code || "Unknown Client",
+          action: task.action,
+          amount: isCease ? cAmt : sAmt,
+          type: isCease ? "cease" : "create"
+        });
+      }
+    });
+
+    // Sort logs descending by date
+    changeLog.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    // Based on requirements: Gross = Current Book + Ceased this month
+    const grossMonthlySip = liveTotalSip + monthCeasedSip;
+    const netMonthlySip = liveTotalSip; 
+
+    return { liveTotalSip, todayNewSip, todayCeasedSip, grossMonthlySip, netMonthlySip, changeLog };
+  }, [clients, completedTasks]);
+
+
   // --- RM AGGREGATION LOGIC ---
   const { reportData, grandTotals } = useMemo(() => {
     const stats = {};
@@ -387,15 +469,15 @@ export default function InvestmentReport() {
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 32 }}>
           <div>
-            <h1 style={{ fontSize: 24, fontWeight: 800 }}>Investment Analytics</h1>
+            <h1 style={{ fontSize: 24, fontWeight: 800, color: "white" }}>Investment Analytics</h1>
             <p style={{ fontSize: 13, color: "#889995" }}>Pooled Performance Tracking</p>
           </div>
           <div style={{ display: "flex", gap: 12 }}>
-            <label style={{ padding: "10px 16px", borderRadius: 10, background: "rgba(96, 165, 250, 0.1)", color: "#60a5fa", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700 }}>
+            <label style={{ padding: "10px 16px", borderRadius: 10, background: "rgba(96, 165, 250, 0.1)", color: "#60a5fa", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700, transition: "background 0.2s" }} className="hover:bg-blue-500/20">
               <Database size={16} /> Import Historical
               <input type="file" accept=".xlsx" onChange={handleImportExcel} style={{ display: "none" }} />
             </label>
-            <button onClick={fetchMonthlyStats} style={{ padding: "10px", borderRadius: 10, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#889995" }}>
+            <button onClick={fetchMonthlyStats} style={{ padding: "10px", borderRadius: 10, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#889995", transition: "background 0.2s" }} className="hover:bg-white/10 hover:text-white">
               <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
             </button>
           </div>
@@ -403,38 +485,202 @@ export default function InvestmentReport() {
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 24, borderBottom: "1px solid rgba(255,255,255,0.1)", marginBottom: 32 }}>
-          {["aum", "sip", "cashflow", "rm"].map(tab => (
-            <button key={tab} onClick={() => setActiveTab(tab)} style={{ paddingBottom: 12, fontSize: 14, fontWeight: 700, borderBottom: activeTab === tab ? "2px solid #4ade80" : "none", color: activeTab === tab ? "#4ade80" : "#889995", background: "transparent", cursor: "pointer", textTransform: "capitalize" }}>
-              {tab === "rm" ? "RM Sourcing" : tab === "aum" ? "AUM Growth" : tab === "sip" ? "SIP Book Growth" : "Cashflow"}
+          {["totalsip", "aum", "cashflow", "rm"].map(tab => (
+            <button 
+              key={tab} 
+              onClick={() => setActiveTab(tab)} 
+              style={{ 
+                paddingBottom: 12, 
+                fontSize: 14, 
+                fontWeight: 700, 
+                borderBottom: activeTab === tab ? "2px solid #4ade80" : "none", 
+                color: activeTab === tab ? "#4ade80" : "#889995", 
+                background: "transparent", 
+                cursor: "pointer" 
+              }}
+              className="hover:text-white transition-colors"
+            >
+              {tab === "totalsip" ? "Total SIP Dashboard" : tab === "rm" ? "RM Sourcing" : tab === "aum" ? "AUM Growth" : "Cashflow"}
             </button>
           ))}
         </div>
 
-        {activeTab !== "rm" ? (
-          <>
-            {/* Entry Form (Hidden for SIP Book since it's fully automated) */}
-            {activeTab !== "sip" && (
-              <div style={cardStyle} ref={formRef}>
-                <form onSubmit={handleSaveStat} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 16 }}>
-                  <div><label style={labelStyle}>Month</label><input type="month" value={statForm.monthId} onChange={e => setStatForm({...statForm, monthId: e.target.value})} style={inputStyle} required disabled={isEditingStat} /></div>
-                  <div><label style={labelStyle}>Total AUM (₹)</label><input type="number" value={statForm.aum} onChange={e => setStatForm({...statForm, aum: e.target.value})} style={inputStyle} /></div>
-                  <div><label style={labelStyle}>Purchase (₹)</label><input type="number" value={statForm.purchase} onChange={e => setStatForm({...statForm, purchase: e.target.value})} style={inputStyle} /></div>
-                  <div><label style={labelStyle}>Redemption (₹)</label><input type="number" value={statForm.redemption} onChange={e => setStatForm({...statForm, redemption: e.target.value})} style={inputStyle} /></div>
-                  <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                    <button type="submit" style={{ flex: 1, height: 38, borderRadius: 8, background: "#008254", color: "white", border: "none", fontWeight: 700, cursor: "pointer" }}>Save</button>
-                    {isEditingStat && <button type="button" onClick={() => {setIsEditingStat(false); setStatForm({ monthId: format(new Date(), "yyyy-MM"), aum: "", purchase: "", redemption: "" });}} style={{ height: 38, padding: "0 16px", borderRadius: 8, background: "rgba(248,113,113,0.1)", color: "#f87171", border: "1px solid #f87171", cursor: "pointer" }}>Cancel</button>}
-                  </div>
-                </form>
+        {/* --- TAB VIEW 1: TOTAL SIP DASHBOARD --- */}
+        {activeTab === "totalsip" && (
+          <div className="animate-in fade-in duration-200 space-y-6">
+            
+            {/* Top Row: Live Total */}
+            <div style={{...cardStyle, background: "rgba(0,130,84,0.08)", border: "1px solid rgba(0,130,84,0.3)", display: 'flex', alignItems: 'center', gap: 24}}>
+               <div style={{padding: 20, background: "rgba(0,130,84,0.2)", borderRadius: 16}}>
+                 <Wallet size={36} color="#4ade80" />
+               </div>
+               <div>
+                 <p style={{fontSize: 12, color: "#4ade80", fontWeight: 800, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4}}>Live Total Active SIP Book</p>
+                 <p style={{fontSize: 42, fontWeight: 900, color: "white", margin: 0}}>₹{Number(totalSipData.liveTotalSip).toLocaleString('en-IN')}</p>
+                 <p style={{fontSize: 12, color: "#889995", marginTop: 4}}>Dynamically aggregated from {clients.length} individual client portfolios</p>
+               </div>
+            </div>
+
+            {/* Middle Row: Today & Monthly Details */}
+            <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16}}>
+               <div style={cardStyle}>
+                 <div className="flex justify-between items-start mb-2">
+                   <p style={{fontSize: 11, color: "#889995", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5}}>Today's New SIPs</p>
+                   <TrendingUp size={16} color="#4ade80" />
+                 </div>
+                 <p style={{fontSize: 28, fontWeight: 800, color: "#4ade80"}}>+₹{Number(totalSipData.todayNewSip).toLocaleString('en-IN')}</p>
+               </div>
+               
+               <div style={cardStyle}>
+                 <div className="flex justify-between items-start mb-2">
+                   <p style={{fontSize: 11, color: "#889995", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5}}>Today's Ceased SIPs</p>
+                   <TrendingDown size={16} color="#f87171" />
+                 </div>
+                 <p style={{fontSize: 28, fontWeight: 800, color: "#f87171"}}>-₹{Number(totalSipData.todayCeasedSip).toLocaleString('en-IN')}</p>
+               </div>
+
+               <div style={cardStyle}>
+                 <div className="flex justify-between items-start mb-2">
+                   <p style={{fontSize: 11, color: "#889995", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5}}>Gross Monthly Inflow</p>
+                   <CalendarClock size={16} color="#60a5fa" />
+                 </div>
+                 <p style={{fontSize: 28, fontWeight: 800, color: "#60a5fa"}}>₹{Number(totalSipData.grossMonthlySip).toLocaleString('en-IN')}</p>
+               </div>
+
+               <div style={cardStyle}>
+                 <div className="flex justify-between items-start mb-2">
+                   <p style={{fontSize: 11, color: "#889995", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5}}>Net Monthly Inflow</p>
+                   <Activity size={16} color="#fbbf24" />
+                 </div>
+                 <p style={{fontSize: 28, fontWeight: 800, color: "#fbbf24"}}>₹{Number(totalSipData.netMonthlySip).toLocaleString('en-IN')}</p>
+               </div>
+            </div>
+
+            {/* Merged SIP Graph */}
+            <div style={cardStyle}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
+                <h3 style={{ fontWeight: 700, color: "white" }}>Automated SIP Book Trajectory</h3>
+                <select value={selectedFY} onChange={e => setSelectedFY(e.target.value)} style={{ background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", color: "#889995", padding: "4px 8px", borderRadius: 6, fontWeight: 700, outline: "none", cursor: "pointer" }}>
+                  {availableFYs.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
               </div>
-            )}
+              <ResponsiveContainer width="100%" height={350}>
+                <ComposedChart data={sipGrowthData.filter(s => selectedFY === "All" || s.financialYear === selectedFY)}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                  <XAxis dataKey="displayMonth" tick={{ fill: "#889995", fontSize: 12 }} axisLine={false} />
+                  <YAxis yAxisId="left" tick={{ fill: "#889995", fontSize: 12 }} axisLine={false} tickFormatter={(v) => formatL(v).replace('₹', '')} />
+                  <YAxis yAxisId="right" orientation="right" tick={{ fill: "#fbbf24", fontSize: 12 }} axisLine={false} tickFormatter={(v) => formatL(v).replace('₹', '')} />
+                  <Tooltip {...tooltipStyle} formatter={(v) => formatL(v)} />
+                  <Legend />
+                  <Bar yAxisId="right" dataKey="netFlow" fill="#60a5fa" name="Net SIP Sourced" />
+                  <Line yAxisId="left" type="monotone" dataKey="sipBook" stroke="#4ade80" strokeWidth={3} name="Total SIP Book Size" dot={{ r: 4 }} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Log and Table Side-by-Side Sections */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '24px' }}>
+              
+              {/* Left Side: Change Log */}
+              <div style={{...cardStyle, padding: "24px 0", marginBottom: 0}}>
+                <div style={{padding: "0 24px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center"}}>
+                  <h3 style={{fontSize: 16, fontWeight: 800, color: "white", display: 'flex', alignItems: 'center', gap: 10}}>
+                    <CalendarClock size={18} color="#fbbf24" /> Live SIP Change Log
+                  </h3>
+                  <span style={{background: "rgba(255,255,255,0.05)", padding: "4px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, color: "#889995"}}>{totalSipData.changeLog.length} Records</span>
+                </div>
+                
+                <div style={{maxHeight: 350, overflowY: 'auto', padding: "0 24px"}} className="custom-scrollbar">
+                  {totalSipData.changeLog.length === 0 ? (
+                    <div style={{textAlign: "center", padding: "40px 0", border: "1px dashed rgba(255,255,255,0.1)", borderRadius: 12}}>
+                      <p style={{color: "#889995", fontSize: 13}}>No recent SIP activity found.</p>
+                    </div>
+                  ) : (
+                    <div style={{display: 'flex', flexDirection: 'column', gap: 10}}>
+                      {totalSipData.changeLog.map((log, i) => (
+                        <div key={i} style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', background: 'rgba(0,0,0,0.3)', borderRadius: 12, borderLeft: `4px solid ${log.type === 'cease' ? '#f87171' : '#4ade80'}`, borderTop: "1px solid rgba(255,255,255,0.02)", borderRight: "1px solid rgba(255,255,255,0.02)", borderBottom: "1px solid rgba(255,255,255,0.02)"}} className="hover:bg-white/5 transition-colors">
+                          <div>
+                            <p style={{fontSize: 14, fontWeight: 700, color: 'white'}}>{log.clientName}</p>
+                            <p style={{fontSize: 11, color: "#889995", marginTop: 4, display: "flex", gap: 6, alignItems: "center"}}>
+                              {log.date ? format(parseISO(log.date), "dd MMM yyyy") : "Unknown Date"} 
+                              <span>·</span> 
+                              <span style={{color: log.type === 'cease' ? '#f87171' : '#4ade80', fontWeight: 600, background: log.type === 'cease' ? 'rgba(248,113,113,0.1)' : 'rgba(74,222,128,0.1)', padding: "2px 6px", borderRadius: 4}}>{log.action}</span>
+                            </p>
+                          </div>
+                          <p style={{fontSize: 16, fontWeight: 800, color: log.type === 'cease' ? '#f87171' : '#4ade80'}}>
+                            {log.type === 'cease' ? '-' : '+'}₹{Number(log.amount).toLocaleString('en-IN')}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right Side: Historical SIP Table */}
+              <div style={{ ...cardStyle, padding: "24px 0", marginBottom: 0 }}>
+                <div style={{padding: "0 24px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center"}}>
+                  <h3 style={{fontSize: 16, fontWeight: 800, color: "white", display: 'flex', alignItems: 'center', gap: 10}}>
+                    <Database size={18} color="#60a5fa" /> Monthly SIP Booked
+                  </h3>
+                </div>
+                <div style={{ maxHeight: 350, overflowY: 'auto', padding: "0 12px" }} className="custom-scrollbar">
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)", color: "#556660", fontSize: 10, textTransform: "uppercase", position: "sticky", top: 0, background: "#0a1612" }}>
+                        <th style={{ padding: 12, textAlign: "left" }}>Month</th>
+                        <th style={{ padding: 12, textAlign: "right" }}>Total SIP Book Size</th>
+                        <th style={{ padding: 12, textAlign: "right" }}>Net Sourced Flow</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...sipGrowthData].reverse().map(s => {
+                        if (selectedFY !== "All" && s.financialYear !== selectedFY) return null;
+                        const flowColor = s.netFlow >= 0 ? "#4ade80" : "#f87171";
+                        return (
+                          <tr key={s.monthId} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }} className="hover:bg-white/5 transition-colors">
+                            <td style={{ padding: 12, fontWeight: 700, color: "white" }}>
+                              {s.displayMonth}
+                              <span style={{ display: "block", fontSize: 9, color: "#556660", marginTop: 2 }}>{s.financialYear}</span>
+                            </td>
+                            <td style={{ padding: 12, textAlign: "right", fontWeight: 700, color: "white" }}>{formatL(s.sipBook)}</td>
+                            <td style={{ padding: 12, textAlign: "right", color: flowColor, fontWeight: 700 }}>{s.netFlow > 0 ? "+" : ""}{formatL(s.netFlow)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* --- TAB VIEW 2: HISTORICAL CHARTS (AUM, Cashflow) --- */}
+        {["aum", "cashflow"].includes(activeTab) && (
+          <div className="animate-in fade-in duration-200">
+            {/* Entry Form */}
+            <div style={cardStyle} ref={formRef}>
+              <form onSubmit={handleSaveStat} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 16 }}>
+                <div><label style={labelStyle}>Month</label><input type="month" value={statForm.monthId} onChange={e => setStatForm({...statForm, monthId: e.target.value})} style={inputStyle} required disabled={isEditingStat} /></div>
+                <div><label style={labelStyle}>Total AUM (₹)</label><input type="number" value={statForm.aum} onChange={e => setStatForm({...statForm, aum: e.target.value})} style={inputStyle} /></div>
+                <div><label style={labelStyle}>Purchase (₹)</label><input type="number" value={statForm.purchase} onChange={e => setStatForm({...statForm, purchase: e.target.value})} style={inputStyle} /></div>
+                <div><label style={labelStyle}>Redemption (₹)</label><input type="number" value={statForm.redemption} onChange={e => setStatForm({...statForm, redemption: e.target.value})} style={inputStyle} /></div>
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                  <button type="submit" style={{ flex: 1, height: 38, borderRadius: 8, background: "#008254", color: "white", border: "none", fontWeight: 700, cursor: "pointer" }} className="hover:bg-[#008254]/80 transition-colors">Save</button>
+                  {isEditingStat && <button type="button" onClick={() => {setIsEditingStat(false); setStatForm({ monthId: format(new Date(), "yyyy-MM"), aum: "", purchase: "", redemption: "" });}} style={{ height: 38, padding: "0 16px", borderRadius: 8, background: "rgba(248,113,113,0.1)", color: "#f87171", border: "1px solid #f87171", cursor: "pointer" }} className="hover:bg-red-500/20 transition-colors">Cancel</button>}
+                </div>
+              </form>
+            </div>
 
             {/* Main Analytical Charts */}
             <div style={cardStyle}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
-                <h3 style={{ fontWeight: 700 }}>
-                  {activeTab === 'aum' ? 'AUM Growth' : activeTab === 'sip' ? 'Automated SIP Book Trajectory' : 'Cashflow Trends'}
+                <h3 style={{ fontWeight: 700, color: "white" }}>
+                  {activeTab === 'aum' ? 'AUM Growth' : 'Cashflow Trends'}
                 </h3>
-                <select value={selectedFY} onChange={e => setSelectedFY(e.target.value)} style={{ background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", color: "#889995", padding: "4px 8px", borderRadius: 6, fontWeight: 700, outline: "none" }}>
+                <select value={selectedFY} onChange={e => setSelectedFY(e.target.value)} style={{ background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", color: "#889995", padding: "4px 8px", borderRadius: 6, fontWeight: 700, outline: "none", cursor: "pointer" }}>
                   {availableFYs.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
               </div>
@@ -447,17 +693,6 @@ export default function InvestmentReport() {
                     <Tooltip {...tooltipStyle} formatter={(v) => formatCr(v)} />
                     <Line type="monotone" dataKey="totalAUM" stroke="#4ade80" strokeWidth={3} name="Total AUM" dot={{ r: 6 }} />
                   </LineChart>
-                ) : activeTab === "sip" ? (
-                  <ComposedChart data={sipGrowthData.filter(s => selectedFY === "All" || s.financialYear === selectedFY)}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                    <XAxis dataKey="displayMonth" tick={{ fill: "#889995", fontSize: 12 }} axisLine={false} />
-                    <YAxis yAxisId="left" tick={{ fill: "#889995", fontSize: 12 }} axisLine={false} tickFormatter={(v) => formatL(v).replace('₹', '')} />
-                    <YAxis yAxisId="right" orientation="right" tick={{ fill: "#fbbf24", fontSize: 12 }} axisLine={false} tickFormatter={(v) => formatL(v).replace('₹', '')} />
-                    <Tooltip {...tooltipStyle} formatter={(v) => formatL(v)} />
-                    <Legend />
-                    <Bar yAxisId="right" dataKey="netFlow" fill="#60a5fa" name="Net SIP Sourced" />
-                    <Line yAxisId="left" type="monotone" dataKey="sipBook" stroke="#4ade80" strokeWidth={3} name="Total SIP Book Size" dot={{ r: 4 }} />
-                  </ComposedChart>
                 ) : (
                   <ComposedChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
@@ -487,12 +722,6 @@ export default function InvestmentReport() {
                         <th style={{ padding: 12, textAlign: "right" }}>Growth (%)</th>
                         <th style={{ padding: 12, textAlign: "center" }}>Act</th>
                       </>
-                    ) : activeTab === 'sip' ? (
-                      <>
-                        <th style={{ padding: 12, textAlign: "left" }}>Month</th>
-                        <th style={{ padding: 12, textAlign: "right" }}>Total SIP Book Size</th>
-                        <th style={{ padding: 12, textAlign: "right" }}>Net Sourced Flow</th>
-                      </>
                     ) : (
                       <>
                         <th style={{ padding: 12, textAlign: "left" }}>Month</th>
@@ -506,63 +735,49 @@ export default function InvestmentReport() {
                   </tr>
                 </thead>
                 <tbody>
-                  {activeTab === 'sip' ? (
-                    [...sipGrowthData].reverse().map(s => {
-                      if (selectedFY !== "All" && s.financialYear !== selectedFY) return null;
-                      const flowColor = s.netFlow >= 0 ? "#4ade80" : "#f87171";
-                      return (
-                        <tr key={s.monthId} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
-                          <td style={{ padding: 12, fontWeight: 700 }}>
-                            {s.displayMonth}
-                            <span style={{ display: "block", fontSize: 9, color: "#556660", marginTop: 2 }}>{s.financialYear}</span>
-                          </td>
-                          <td style={{ padding: 12, textAlign: "right", fontWeight: 700, color: "white" }}>{formatL(s.sipBook)}</td>
-                          <td style={{ padding: 12, textAlign: "right", color: flowColor, fontWeight: 700 }}>{s.netFlow > 0 ? "+" : ""}{formatL(s.netFlow)}</td>
-                        </tr>
-                      );
-                    })
-                  ) : (
-                    [...monthlyStats].reverse().map(s => {
-                      if (selectedFY !== "All" && s.financialYear !== selectedFY) return null;
+                  {[...monthlyStats].reverse().map(s => {
+                    if (selectedFY !== "All" && s.financialYear !== selectedFY) return null;
 
-                      const aumColor = s.aumChange >= 0 ? "#4ade80" : "#f87171";
-                      const flowColor = s.netCashflow >= 0 ? "#4ade80" : "#f87171";
+                    const aumColor = s.aumChange >= 0 ? "#4ade80" : "#f87171";
+                    const flowColor = s.netCashflow >= 0 ? "#4ade80" : "#f87171";
 
-                      return (
-                        <tr key={s.monthId} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
-                          <td style={{ padding: 12, fontWeight: 700 }}>
-                            {s.displayMonth}
-                            <span style={{ display: "block", fontSize: 9, color: "#556660", marginTop: 2 }}>{s.financialYear}</span>
-                          </td>
-                          
-                          {activeTab === 'aum' ? (
-                            <>
-                              <td style={{ padding: 12, textAlign: "right", fontWeight: 700, color: "white" }}>{formatCr(s.totalAUM)}</td>
-                              <td style={{ padding: 12, textAlign: "right", color: aumColor }}>{s.aumChange > 0 ? "+" : ""}{formatCr(s.aumChange)}</td>
-                              <td style={{ padding: 12, textAlign: "right", color: aumColor }}>{s.aumChangePct > 0 ? "+" : ""}{s.aumChangePct}%</td>
-                            </>
-                          ) : (
-                            <>
-                              <td style={{ padding: 12, textAlign: "right", color: "#60a5fa" }}>{formatL(s.purchase)}</td>
-                              <td style={{ padding: 12, textAlign: "right", color: "#f87171" }}>{formatL(s.redemption)}</td>
-                              <td style={{ padding: 12, textAlign: "right", color: flowColor, fontWeight: 700 }}>{s.netCashflow > 0 ? "+" : ""}{formatL(s.netCashflow)}</td>
-                              <td style={{ padding: 12, textAlign: "right", color: "#fbbf24", fontWeight: 600 }}>{formatL(s.cumCashflow)}</td>
-                            </>
-                          )}
-                          
-                          <td style={{ padding: 12, textAlign: "center" }}>
-                            <button onClick={() => handleEditRow(s)} style={{ background: "transparent", border: "none", color: "#889995", cursor: "pointer" }} title="Edit Record"><Pencil size={14}/></button>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
+                    return (
+                      <tr key={s.monthId} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }} className="hover:bg-white/5 transition-colors">
+                        <td style={{ padding: 12, fontWeight: 700, color: "white" }}>
+                          {s.displayMonth}
+                          <span style={{ display: "block", fontSize: 9, color: "#556660", marginTop: 2 }}>{s.financialYear}</span>
+                        </td>
+                        
+                        {activeTab === 'aum' ? (
+                          <>
+                            <td style={{ padding: 12, textAlign: "right", fontWeight: 700, color: "white" }}>{formatCr(s.totalAUM)}</td>
+                            <td style={{ padding: 12, textAlign: "right", color: aumColor }}>{s.aumChange > 0 ? "+" : ""}{formatCr(s.aumChange)}</td>
+                            <td style={{ padding: 12, textAlign: "right", color: aumColor }}>{s.aumChangePct > 0 ? "+" : ""}{s.aumChangePct}%</td>
+                          </>
+                        ) : (
+                          <>
+                            <td style={{ padding: 12, textAlign: "right", color: "#60a5fa" }}>{formatL(s.purchase)}</td>
+                            <td style={{ padding: 12, textAlign: "right", color: "#f87171" }}>{formatL(s.redemption)}</td>
+                            <td style={{ padding: 12, textAlign: "right", color: flowColor, fontWeight: 700 }}>{s.netCashflow > 0 ? "+" : ""}{formatL(s.netCashflow)}</td>
+                            <td style={{ padding: 12, textAlign: "right", color: "#fbbf24", fontWeight: 600 }}>{formatL(s.cumCashflow)}</td>
+                          </>
+                        )}
+                        
+                        <td style={{ padding: 12, textAlign: "center" }}>
+                          <button onClick={() => handleEditRow(s)} style={{ background: "transparent", border: "none", color: "#889995", cursor: "pointer" }} className="hover:text-white transition-colors" title="Edit Record"><Pencil size={14}/></button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
-          </>
-        ) : (
-          <div className="animate-in fade-in">
+          </div>
+        )}
+
+        {/* --- TAB VIEW 3: RM SOURCING --- */}
+        {activeTab === "rm" && (
+          <div className="animate-in fade-in duration-200">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20 }}>
                <div style={{ display: "flex", alignItems: "center", gap: 12, background: "rgba(0,130,84,0.1)", padding: "10px 16px", borderRadius: 12, border: "1px solid rgba(0,130,84,0.3)"}}>
                   <Activity size={20} color="#4ade80" />
@@ -610,8 +825,8 @@ export default function InvestmentReport() {
                 </thead>
                 <tbody>
                   {reportData.map(row => (
-                    <tr key={row.name} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
-                      <td style={{ padding: 12, fontWeight: 700, color: "#c8d4d0" }}>{row.name}</td>
+                    <tr key={row.name} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }} className="hover:bg-white/5 transition-colors">
+                      <td style={{ padding: 12, fontWeight: 700, color: "white" }}>{row.name}</td>
                       <td style={{ padding: 12, textAlign: "right", color: "#4ade80", fontWeight: 600 }}>{formatL(row.sip)}</td>
                       <td style={{ padding: 12, textAlign: "right", color: "#f87171", fontWeight: 600 }}>{formatL(row.sipCease)}</td>
                       <td style={{ padding: 12, textAlign: "right", color: row.netSip >= 0 ? "#4ade80" : "#f87171", fontWeight: 700 }}>{formatL(row.netSip)}</td>
@@ -625,6 +840,7 @@ export default function InvestmentReport() {
             </div>
           </div>
         )}
+
       </div>
     </div>
   );

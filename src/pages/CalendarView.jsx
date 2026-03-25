@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek, addDays, isSameMonth, isToday, parseISO, isSameDay, addWeeks, subWeeks, addMonths, subMonths } from "date-fns";
+// 1. ADDED isSunday TO IMPORTS
+import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek, addDays, isSameMonth, isToday, parseISO, isSameDay, addWeeks, subWeeks, addMonths, subMonths, isSunday } from "date-fns";
 import { ChevronLeft, ChevronRight, X, Star, Calendar as CalendarIcon } from "lucide-react";
 
 // Firebase Imports
@@ -55,18 +56,14 @@ export default function CalendarView() {
   const [selectedDayData, setSelectedDayData] = useState({ dayTasks: [], holiday: null });
   const [expandedTaskId, setExpandedTaskId] = useState(null); 
 
-  // --- READ OPTIMIZATION: Fetch tasks based on the current calendar view window ---
   useEffect(() => {
     setLoading(true);
     
-    // Create a 3-month window around the currently viewed month (Previous, Current, Next)
-    // This allows the calendar to render trailing/leading days without loading 10 years of data.
     const windowStart = format(subMonths(current, 1), "yyyy-MM-01");
     const windowEnd = format(addMonths(current, 2), "yyyy-MM-01");
 
     const tasksRef = collection(db, "tasks");
     
-    // We only need Active tasks for the calendar view (you don't usually track completed tasks in a calendar planner)
     const q = query(
       tasksRef, 
       where("status", "in", ["Pending", "Under Process", "Waiting Client"]),
@@ -84,7 +81,7 @@ export default function CalendarView() {
     });
 
     return () => unsubscribe();
-  }, [current]); // Refetch if the user navigates to a drastically different month
+  }, [current]);
 
   const allRMs = [...new Set(tasks.map(t => t.assigned_to).filter(Boolean))];
   const rmColorMap = {};
@@ -126,8 +123,9 @@ export default function CalendarView() {
     return (
       <div className="select-none">
         <div className="grid grid-cols-7 mb-2">
-          {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(day => (
-            <div key={day} className="text-center text-[10px] font-bold text-[#556660] uppercase tracking-wider py-2">{day}</div>
+          {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map((day, i) => (
+            // Highlight Sunday in the column header
+            <div key={day} className={`text-center text-[10px] font-bold uppercase tracking-wider py-2 ${i === 6 ? 'text-red-400' : 'text-[#556660]'}`}>{day}</div>
           ))}
         </div>
         {weeks.map((week, wi) => (
@@ -136,6 +134,8 @@ export default function CalendarView() {
               const { dayTasks, holiday } = getDayData(tasks, day);
               const inMonth = isSameMonth(day, current);
               const isT = isToday(day);
+              // 2. CHECK IF SUNDAY
+              const isSun = isSunday(day);
               const rmCounts = {};
               dayTasks.forEach(t => { if (t.assigned_to) rmCounts[t.assigned_to] = (rmCounts[t.assigned_to] || 0) + 1; });
 
@@ -145,14 +145,16 @@ export default function CalendarView() {
                   onClick={() => openDay(day)}
                   style={{
                     minHeight: 110, padding: "10px", borderRadius: 12, cursor: "pointer",
-                    background: holiday ? "rgba(248,113,113,0.05)" : isT ? "rgba(0,130,84,0.12)" : inMonth ? "rgba(255,255,255,0.02)" : "transparent",
-                    border: holiday ? "1px solid rgba(248,113,113,0.2)" : isT ? "1px solid rgba(0,130,84,0.4)" : "1px solid rgba(255,255,255,0.05)",
+                    // 3. APPLY SUNDAY BACKGROUND & BORDER IF IT'S NOT TODAY OR A HOLIDAY
+                    background: holiday ? "rgba(248,113,113,0.05)" : isT ? "rgba(0,130,84,0.12)" : isSun ? "rgba(248,113,113,0.03)" : inMonth ? "rgba(255,255,255,0.02)" : "transparent",
+                    border: holiday ? "1px solid rgba(248,113,113,0.2)" : isT ? "1px solid rgba(0,130,84,0.4)" : isSun ? "1px solid rgba(248,113,113,0.1)" : "1px solid rgba(255,255,255,0.05)",
                     opacity: inMonth ? 1 : 0.3,
                   }}
                   className="transition-all hover:bg-white/5"
                 >
                   <div className="flex justify-between items-start mb-1">
-                    <span className="text-xs font-bold" style={{ color: holiday ? "#f87171" : isT ? "#4ade80" : inMonth ? "#c8d4d0" : "#556660" }}>
+                    {/* 4. APPLY SUNDAY TEXT COLOR */}
+                    <span className="text-xs font-bold" style={{ color: holiday ? "#f87171" : isT ? "#4ade80" : isSun ? "#fca5a5" : inMonth ? "#c8d4d0" : "#556660" }}>
                       {format(day, "d")}
                     </span>
                     {holiday && <Star className="w-3 h-3 text-[#f87171] fill-[#f87171]/20" />}
@@ -191,11 +193,14 @@ export default function CalendarView() {
         {days.map((day, i) => {
           const { dayTasks, holiday } = getDayData(tasks, day);
           const isT = isToday(day);
+          // 5. CHECK IF SUNDAY IN WEEK VIEW
+          const isSun = isSunday(day);
           return (
-            <div key={i} className={`p-4 rounded-2xl min-h-[300px] border transition-all ${isT ? 'bg-brand-green/5 border-brand-green/30' : 'bg-white/5 border-white/10'}`}>
+            // 6. APPLY SUNDAY CLASSES IN WEEK VIEW
+            <div key={i} className={`p-4 rounded-2xl min-h-[300px] border transition-all ${isT ? 'bg-brand-green/5 border-brand-green/30' : isSun ? 'bg-red-400/5 border-red-400/20' : 'bg-white/5 border-white/10'}`}>
               <div className="mb-4">
-                <p className={`text-[10px] font-bold uppercase tracking-widest ${holiday ? 'text-red-400' : 'text-white/40'}`}>{format(day, "EEE")}</p>
-                <p className={`text-2xl font-black ${holiday ? 'text-red-400' : isT ? 'text-brand-green' : 'text-white'}`}>{format(day, "d")}</p>
+                <p className={`text-[10px] font-bold uppercase tracking-widest ${holiday || isSun ? 'text-red-400' : 'text-white/40'}`}>{format(day, "EEE")}</p>
+                <p className={`text-2xl font-black ${holiday || isSun ? 'text-red-400' : isT ? 'text-brand-green' : 'text-white'}`}>{format(day, "d")}</p>
                 {holiday && <p className="text-[9px] font-bold text-red-400/80 mt-1 uppercase leading-tight">{holiday.name}</p>}
               </div>
               <div className="space-y-2">
