@@ -9,14 +9,14 @@ const TEMPLATE_HEADERS = [
   "Client Code", "Client Name", "Tax Status", "Holding Nature", 
   "Folio Number", "xSIP Registration Number", "Scheme Name", 
   "Frequency Type", "Start Date", "End Date", "Installment Amount", 
-  "RM Assigned", "Branch", "Notes"
+  "RM Assigned", "Branch", "Client Information", "Action Notes"
 ];
 
 const TEMPLATE_EXAMPLE = [
   "PAN1234567", "Rajesh Mehta", "INDIVIDUAL", "SINGLE", 
   "FOLIO98765", "99887766", "HDFC Bluechip", 
   "Monthly", "2024-01-01", "2034-01-01", "5000", 
-  "Priya Sharma", "Mumbai", "HNI client"
+  "Priya Sharma", "Mumbai", "HNI client, prefers WhatsApp communication", "Follow up regarding recent NFO next Tuesday"
 ];
 
 function downloadTemplate() {
@@ -50,6 +50,10 @@ const HEADER_MAP = {
   "rm assigned": "rm_assigned",
   "branch": "branch",
   "notes": "notes",
+  "client information": "client_info", // NEW MAPPING
+  "client info": "client_info",        // ALIAS
+  "action notes": "client_action",     // NEW MAPPING
+  "action": "client_action",           // ALIAS
 };
 
 // Helper: Safely extracts numbers from an xSIP string to ensure strict matching
@@ -58,16 +62,12 @@ function parseXSIPAsNumber(val) {
   
   let strVal = String(val).trim();
   
-  // Safety net: If Excel accidentally exports the scientific notation (e.g. "2.02E+14"), expand it back to a flat string
   if (strVal.toUpperCase().includes("E")) {
     try {
       strVal = Number(strVal).toLocaleString('fullwide', { useGrouping: false });
-    } catch (e) {
-      // Ignore conversion errors
-    }
+    } catch (e) {}
   }
   
-  // Extract only the digits from the text (removes accidental spaces, dashes, etc.)
   const numericPart = strVal.replace(/\D/g, '');
   return numericPart.length > 0 ? numericPart : strVal;
 }
@@ -142,19 +142,27 @@ export default function ClientImport({ onImportDone, onClose }) {
       // 2. Process rows and map them intelligently to existing docs
       for (const row of rawRows) {
         const code = row.client_code ? String(row.client_code).trim() : "-";
+        const name = row.client_name ? String(row.client_name).trim().toLowerCase() : "-";
+        
         if (code === "-" || !row.client_name) { failed++; continue; }
 
         const tax = row.tax_status ? String(row.tax_status).trim().toUpperCase() : "-";
         const holding = row.holding_nature ? String(row.holding_nature).trim().toUpperCase() : "-";
 
-        // Find existing documents for this client code
-        const codeMatches = inMemoryDB.filter(c => String(c.client_code).trim() === code);
+        // Find existing documents matching EITHER Client Code OR Client Name
+        const existingMatches = inMemoryDB.filter(c => {
+          const matchCode = code !== "-" && String(c.client_code).trim() === code;
+          const matchName = name !== "-" && String(c.client_name).trim().toLowerCase() === name;
+          return matchCode || matchName;
+        });
+
         let targetDoc = null;
 
-        if (codeMatches.length > 0) {
-          targetDoc = codeMatches[0];
+        if (existingMatches.length > 0) {
+          targetDoc = existingMatches[0];
+          // If multiple matches, refine by exact tax status if available
           if (tax !== "-") {
-            const exactMatch = codeMatches.find(c => c.tax_status === tax);
+            const exactMatch = existingMatches.find(c => c.tax_status === tax);
             if (exactMatch) targetDoc = exactMatch;
           }
         }
@@ -167,7 +175,6 @@ export default function ClientImport({ onImportDone, onClose }) {
           const parsedXSIP = parseXSIPAsNumber(row.xsip_reg_no);
           const finalXSIP = parsedXSIP ? parsedXSIP : `UNKNOWN-${Math.floor(Math.random()*10000)}`;
 
-          // Extract amount cleanly (removes commas if any were left in excel formatting)
           let cleanAmount = row.installment_amount ? String(row.installment_amount).replace(/,/g, '').trim() : "-";
 
           investmentData = {
@@ -182,24 +189,26 @@ export default function ClientImport({ onImportDone, onClose }) {
         }
 
         if (targetDoc) {
+          // Update core fields if they are explicitly provided in the excel
           if (tax !== "-") targetDoc.tax_status = tax;
           if (holding !== "-") targetDoc.holding_nature = holding;
           if (row.rm_assigned && row.rm_assigned !== "-") targetDoc.rm_assigned = row.rm_assigned;
           if (row.branch && row.branch !== "-") targetDoc.branch = row.branch;
           if (row.notes && row.notes !== "-") targetDoc.notes = row.notes;
 
+          // NEW: Inject Client Info and Action automatically if they exist in the Excel sheet
+          if (row.client_info && row.client_info !== "-") targetDoc.client_info = row.client_info;
+          if (row.client_action && row.client_action !== "-") targetDoc.client_action = row.client_action;
+
           if (investmentData) {
             if (!targetDoc.investments) targetDoc.investments = [];
             
-            // STRICT MATCHING: Check if investment exists using xSIP AND Scheme Name
             const idx = targetDoc.investments.findIndex(i => {
               const hasValidXSIP = !i.xsip_reg_no.startsWith("UNKNOWN") && !investmentData.xsip_reg_no.startsWith("UNKNOWN");
               
               if (hasValidXSIP) {
-                // Match by BOTH xSIP Number AND Scheme Name (Prevents overwriting cart transactions)
                 return i.xsip_reg_no === investmentData.xsip_reg_no && i.scheme_name === investmentData.scheme_name;
               } else {
-                // Lumpsum Fallback: Match by Folio + Scheme + Amount to prevent duplicates on re-upload
                 return i.folio_number === investmentData.folio_number && 
                        i.scheme_name === investmentData.scheme_name && 
                        i.installment_amount === investmentData.installment_amount;
@@ -207,7 +216,6 @@ export default function ClientImport({ onImportDone, onClose }) {
             });
 
             if (idx >= 0) {
-              // If it exists, UPDATE the specific fields but don't duplicate the array
               targetDoc.investments[idx] = {
                 ...targetDoc.investments[idx],
                 ...investmentData,
@@ -216,7 +224,6 @@ export default function ClientImport({ onImportDone, onClose }) {
                 folio_number: investmentData.folio_number !== "-" ? investmentData.folio_number : targetDoc.investments[idx].folio_number,
               };
             } else {
-              // If it does NOT exist, push it as a new investment
               targetDoc.investments.push(investmentData); 
             }
           }
@@ -234,6 +241,8 @@ export default function ClientImport({ onImportDone, onClose }) {
             rm_assigned: row.rm_assigned ? String(row.rm_assigned).trim() : "-",
             branch: row.branch ? String(row.branch).trim() : "-",
             notes: row.notes ? String(row.notes).trim() : "-",
+            client_info: row.client_info ? String(row.client_info).trim() : "-",       // Added to new creation
+            client_action: row.client_action ? String(row.client_action).trim() : "-", // Added to new creation
             investments: investmentData ? [investmentData] : []
           };
           inMemoryDB.push(newDoc);
@@ -274,7 +283,7 @@ export default function ClientImport({ onImportDone, onClose }) {
         <Download className="w-4 h-4 text-brand-green mt-0.5 flex-shrink-0" />
         <div className="flex-1">
           <p className="text-sm font-medium text-[#c8d4d0]">Step 1: Download the template</p>
-          <p className="text-xs text-[#889995] mt-0.5">The system matches funds by <span className="font-bold text-white">xSIP + Scheme Name</span>. This safely handles "Cart" transactions where multiple funds share the same xSIP Registration Number.</p>
+          <p className="text-xs text-[#889995] mt-0.5">The system maps existing clients by <span className="font-bold text-white">Client Code</span> OR <span className="font-bold text-white">Client Name</span>. If a match is found, your new Client Info and Action notes will be injected directly into their profile.</p>
         </div>
         <button onClick={downloadTemplate} className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-brand-green text-brand-green hover:bg-brand-green hover:text-white transition-all flex-shrink-0">
           Download Template
@@ -302,7 +311,7 @@ export default function ClientImport({ onImportDone, onClose }) {
           <CheckCircle2 className="w-5 h-5 text-[#4ade80] flex-shrink-0 mt-0.5" />
           <div className="text-sm text-[#c8d4d0]">
             <p className="font-semibold text-white">Import complete!</p>
-            <p className="mt-1 text-xs text-[#889995]">{result.created} clients created · {result.updated} updated</p>
+            <p className="mt-1 text-xs text-[#889995]">{result.created} new clients created · {result.updated} clients updated with new info</p>
           </div>
         </div>
       )}

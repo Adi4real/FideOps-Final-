@@ -24,13 +24,12 @@ const PRIORITIES = ["High", "Medium", "Low"];
 const CHANNELS = ["Call", "WhatsApp", "Email", "Meeting", "In-Person", "Branch Visit"];
 const SIP_ADD_ACTIONS = ["SIP Registration", "SIP Top-up", "SIP Restart"];
 
-// --- CACHING HELPERS (Eliminates 500+ Reads per load) ---
+// --- CACHING HELPERS ---
 const getLocalCache = (key) => {
   try {
     const cached = localStorage.getItem(key);
     if (!cached) return null;
     const { data, timestamp } = JSON.parse(cached);
-    // Expire cache after 24 hours (Optional, but good practice)
     if (Date.now() - timestamp > 24 * 60 * 60 * 1000) return null;
     return data;
   } catch(e) { return null; }
@@ -42,7 +41,7 @@ const setLocalCache = (key, data) => {
   } catch(e) { console.error("Cache limit reached"); }
 };
 
-// --- DATE FORMAT HELPERS FOR HTML INPUTS ---
+// --- DATE FORMAT HELPERS ---
 const toInputDate = (dateStr) => {
   if (!dateStr || dateStr === "-") return "";
   try {
@@ -148,7 +147,6 @@ export default function Clients() {
   const [taskFilter, setTaskFilter] = useState("All");
 
   const [showFilters, setShowFilters] = useState(false);
-  // NEW: Added sipStatus to filters state
   const [filters, setFilters] = useState({ rm: "", tax: "", holding: "", sipStatus: "" });
 
   const [isBulkMode, setIsBulkMode] = useState(false);
@@ -162,6 +160,9 @@ export default function Clients() {
   const [editProductInput, setEditProductInput] = useState("");
   const [savingTaskEdit, setSavingTaskEdit] = useState(false);
 
+  // --- NEW: INLINE EDIT STATE FOR INFO/ACTION ---
+  const [inlineEdit, setInlineEdit] = useState({ field: null, value: "", loading: false });
+
   // Helper to sync both React State and LocalStorage instantly
   const updateClientsState = (newClients) => {
     setClients(newClients);
@@ -172,7 +173,6 @@ export default function Clients() {
     setLocalCache("fw_tasks", newTasks);
   };
 
-  // --- LOCAL-FIRST DATA LOAD ---
   const fetchFreshData = async (silent = false) => {
     if (!silent) setIsRefreshing(true);
     try {
@@ -202,9 +202,8 @@ export default function Clients() {
       setTasks(cachedT);
       setLoading(false);
     } else {
-      fetchFreshData(); // Only costs reads if cache is entirely empty
+      fetchFreshData();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
@@ -221,7 +220,6 @@ export default function Clients() {
     const matchesHolding = filters.holding === "" || c.holding_nature === filters.holding;
     const matchesTax = filters.tax === "" || (c.tax_status && c.tax_status.includes(filters.tax));
 
-    // NEW: SIP Status Logic
     const sipTotal = getSIPTotal(c.investments);
     const matchesSipStatus = filters.sipStatus === "" || 
       (filters.sipStatus === "SIP" && sipTotal > 0) || 
@@ -255,7 +253,7 @@ export default function Clients() {
     else setSelectedIds(new Set(filtered.map(c => c.id))); 
   };
 
-  // --- MUTATIONS: Update DB and Cache simultaneously ---
+  // --- MUTATIONS ---
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
     if (!window.confirm(`Are you sure you want to permanently delete ${selectedIds.size} selected clients?`)) return;
@@ -300,6 +298,21 @@ export default function Clients() {
       }
       setShowForm(false); setEditClient(null);
     } catch (error) { console.error("Error saving client:", error); }
+  };
+
+  const handleInlineSave = async () => {
+    if (!selected || !inlineEdit.field) return;
+    setInlineEdit({ ...inlineEdit, loading: true });
+    try {
+      await updateDoc(doc(db, "clients", selected.id), { [inlineEdit.field]: inlineEdit.value });
+      const updatedClient = { ...selected, [inlineEdit.field]: inlineEdit.value };
+      setSelected(updatedClient);
+      updateClientsState(clients.map(c => c.id === selected.id ? updatedClient : c));
+      setInlineEdit({ field: null, value: "", loading: false });
+    } catch (error) {
+      console.error("Error inline saving:", error);
+      setInlineEdit({ ...inlineEdit, loading: false });
+    }
   };
 
   const handleTaskStatusUpdate = async (taskId, newStatus, fullTaskData) => {
@@ -426,15 +439,6 @@ export default function Clients() {
   const openEdit = (client) => { setEditClient(client); setShowForm(true); };
   const closeForm = () => { setShowForm(false); setEditClient(null); };
 
-  const investmentsWithOriginalIndex = (selected?.investments || []).map((inv, idx) => ({ ...inv, originalIndex: idx }));
-
-  const groupedInvestments = investmentsWithOriginalIndex.reduce((acc, inv) => {
-    const folio = inv.folio_number && inv.folio_number !== "-" ? inv.folio_number : "Unassigned Folios";
-    if (!acc[folio]) acc[folio] = [];
-    acc[folio].push(inv);
-    return acc;
-  }, {});
-
   const renderProfileButton = (c, isSubItem) => {
     const isSelectedForDeletion = selectedIds.has(c.id);
     const isActive = !isBulkMode && selected?.id === c.id;
@@ -465,6 +469,11 @@ export default function Clients() {
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold truncate" style={{ color: isSelectedForDeletion ? "#f87171" : "var(--text-main)" }}>
             {isSubItem ? (c.tax_status && c.tax_status !== "-" ? c.tax_status : "Standard Profile") : c.client_name}
+            {c.relations && c.relations.map((rel, idx) => (
+              <span key={idx} className="text-[10px] text-yellow-400 font-bold ml-2 bg-yellow-400/10 px-1.5 py-0.5 rounded border border-yellow-400/20 truncate max-w-[120px] inline-block align-bottom">
+                {rel.type} of {rel.related_to_name}
+              </span>
+            ))}
             {!isBulkMode && !isSubItem && c.tax_status && c.tax_status !== "-" ? <span className="text-[10px] text-brand-green ml-2">({c.tax_status})</span> : ""}
           </p>
           <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
@@ -506,7 +515,9 @@ export default function Clients() {
       </div>
 
       {showImport && <ClientImport onImportDone={() => { setShowImport(false); fetchFreshData(); }} onClose={() => setShowImport(false)} />}
-      {showForm && <ClientForm client={editClient} onSave={handleSave} onClose={closeForm} />}
+      
+      {/* Pass allClients={clients} to ClientForm */}
+      {showForm && <ClientForm client={editClient} allClients={clients} onSave={handleSave} onClose={closeForm} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
@@ -555,7 +566,6 @@ export default function Clients() {
                     )}
                   </div>
                   <div className="space-y-4">
-                    {/* NEW: SIP STATUS FILTER */}
                     <div>
                       <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">SIP Status</label>
                       <select value={filters.sipStatus} onChange={e => setFilters({...filters, sipStatus: e.target.value})} className="w-full bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none">
@@ -679,10 +689,24 @@ export default function Clients() {
                       {selected.client_name?.[0]?.toUpperCase()}
                     </div>
                     <div>
-                      <h2 className="text-xl font-bold" style={{ color: "var(--text-main)" }}>
-                        {selected.client_name} <span className="text-sm text-brand-green font-mono ml-2">{selected.tax_status && selected.tax_status !== "-" ? `(${selected.tax_status})` : ""}</span>
+                      <h2 className="text-xl font-bold flex items-center flex-wrap gap-2" style={{ color: "var(--text-main)" }}>
+                        {selected.client_name} 
+                        <span className="text-sm text-brand-green font-mono">
+                          {selected.tax_status && selected.tax_status !== "-" ? `(${selected.tax_status})` : ""}
+                        </span>
                       </h2>
-                      <p className="text-sm" style={{ color: "var(--text-muted)" }}>{selected.client_code}</p>
+                      <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>{selected.client_code}</p>
+                      
+                      {/* RELATIONS DISPLAY */}
+                      {selected.relations && selected.relations.length > 0 && (
+                        <div className="flex gap-2 mt-2 flex-wrap">
+                          {selected.relations.map((rel, idx) => (
+                            <span key={idx} className="text-[10px] text-yellow-400 font-bold bg-yellow-400/10 px-2 py-0.5 rounded-md border border-yellow-400/30 tracking-wider uppercase">
+                              {rel.type} of {rel.related_to_name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
@@ -706,11 +730,63 @@ export default function Clients() {
                     </div>
                   ))}
                 </div>
-                {selected.notes && selected.notes !== "-" && (
-                  <div className="mt-4 p-3 rounded-xl text-sm" style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
-                    <span className="font-bold uppercase text-[10px] mr-2">Notes:</span> {selected.notes}
+
+                {/* INLINE EDIT: CLIENT INFORMATION */}
+                <div className="mt-4 p-3 rounded-xl text-sm relative group" style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="font-bold uppercase text-[10px] text-[#889995]">Client Information</span>
+                    {inlineEdit.field !== 'client_info' && (
+                      <button onClick={() => setInlineEdit({ field: 'client_info', value: selected.client_info || "", loading: false })} className="opacity-0 group-hover:opacity-100 text-brand-green hover:text-white transition-all text-xs flex items-center gap-1">
+                        <Pencil size={12}/> Edit
+                      </button>
+                    )}
                   </div>
-                )}
+                  {inlineEdit.field === 'client_info' ? (
+                    <div className="flex items-start gap-2 mt-2">
+                      <textarea 
+                        className="w-full bg-black/50 border border-brand-green/30 rounded-lg p-2 text-xs text-white outline-none focus:border-brand-green min-h-[60px]" 
+                        value={inlineEdit.value} 
+                        onChange={e => setInlineEdit({...inlineEdit, value: e.target.value})} 
+                        placeholder="Add client details here..."
+                      />
+                      <div className="flex flex-col gap-1">
+                        <button onClick={handleInlineSave} disabled={inlineEdit.loading} className="bg-brand-green hover:bg-[#22c55e] transition-colors p-1.5 rounded text-white flex justify-center"><Check size={14}/></button>
+                        <button onClick={() => setInlineEdit({field:null, value:"", loading: false})} className="bg-white/10 hover:bg-white/20 transition-colors p-1.5 rounded text-white/50 flex justify-center"><X size={14}/></button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-white/80 whitespace-pre-wrap">{selected.client_info && selected.client_info !== "-" ? selected.client_info : <span className="italic opacity-50">No client information added.</span>}</p>
+                  )}
+                </div>
+
+                {/* INLINE EDIT: ACTION */}
+                <div className="mt-3 p-3 rounded-xl text-sm relative group" style={{ background: "rgba(0,130,84,0.05)", border: "1px solid rgba(0,130,84,0.3)" }}>
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="font-bold uppercase text-[10px] text-brand-green">Action Items / Next Steps</span>
+                    {inlineEdit.field !== 'client_action' && (
+                      <button onClick={() => setInlineEdit({ field: 'client_action', value: selected.client_action || "", loading: false })} className="opacity-0 group-hover:opacity-100 text-brand-green hover:text-white transition-all text-xs flex items-center gap-1">
+                        <Pencil size={12}/> Edit
+                      </button>
+                    )}
+                  </div>
+                  {inlineEdit.field === 'client_action' ? (
+                    <div className="flex items-start gap-2 mt-2">
+                      <textarea 
+                        className="w-full bg-black/50 border border-brand-green/30 rounded-lg p-2 text-xs text-brand-green font-medium outline-none focus:border-brand-green min-h-[60px]" 
+                        value={inlineEdit.value} 
+                        onChange={e => setInlineEdit({...inlineEdit, value: e.target.value})} 
+                        placeholder="Write down the next action for this client..."
+                      />
+                      <div className="flex flex-col gap-1">
+                        <button onClick={handleInlineSave} disabled={inlineEdit.loading} className="bg-brand-green hover:bg-[#22c55e] transition-colors p-1.5 rounded text-white flex justify-center"><Check size={14}/></button>
+                        <button onClick={() => setInlineEdit({field:null, value:"", loading: false})} className="bg-white/10 hover:bg-white/20 transition-colors p-1.5 rounded text-white/50 flex justify-center"><X size={14}/></button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-white font-medium whitespace-pre-wrap">{selected.client_action && selected.client_action !== "-" ? selected.client_action : <span className="italic font-normal opacity-50 text-brand-green">No pending action.</span>}</p>
+                  )}
+                </div>
+
               </div>
 
               {/* TABS CONTAINER */}

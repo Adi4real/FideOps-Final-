@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { X, Plus, Trash2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { X, Plus, Trash2, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -38,14 +38,90 @@ function getBranch(rm) {
   return rm;
 }
 
-export default function ClientForm({ client, onSave, onClose }) {
+// --- CUSTOM SEARCHABLE DROPDOWN COMPONENT ---
+const ClientSearchSelect = ({ value, onChange, clients = [] }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState(value || "");
+
+  // Sync external changes
+  useEffect(() => { setSearch(value || ""); }, [value]);
+
+  const filtered = clients.filter(c => 
+    c.client_name?.toLowerCase().includes(search.toLowerCase()) || 
+    c.client_code?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="relative w-full">
+      <div className="relative">
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40" />
+        <Input
+          value={search}
+          onChange={e => {
+            setSearch(e.target.value);
+            setIsOpen(true);
+            onChange(e.target.value); // Allow free-text in case client isn't in system yet
+          }}
+          onFocus={() => setIsOpen(true)}
+          onBlur={() => setTimeout(() => setIsOpen(false), 200)} // Delay so click registers
+          placeholder="Search client name..."
+          className="flex h-9 w-full rounded-md border border-white/10 bg-black pl-8 pr-3 py-1 text-sm text-white focus:outline-none focus:ring-1 focus:ring-yellow-500"
+        />
+      </div>
+      
+      {isOpen && (
+        <div className="absolute z-50 w-full mt-1 max-h-48 overflow-y-auto bg-[#1a1a1a] border border-white/10 rounded-lg shadow-xl custom-scrollbar">
+          {filtered.length > 0 ? (
+            filtered.map(c => (
+              <div
+                key={c.id}
+                className="px-3 py-2 text-sm text-white hover:bg-yellow-500/20 hover:text-yellow-400 cursor-pointer transition-colors border-b border-white/5 last:border-0"
+                onClick={() => {
+                  onChange(c.client_name);
+                  setSearch(c.client_name);
+                  setIsOpen(false);
+                }}
+              >
+                <p className="font-medium">{c.client_name}</p>
+                <p className="text-[10px] text-white/40 mt-0.5">{c.client_code}</p>
+              </div>
+            ))
+          ) : (
+            <div className="px-3 py-3 text-xs text-white/40 italic text-center">No matching clients found</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default function ClientForm({ client, allClients, onSave, onClose }) {
   const [form, setForm] = useState(client || {
     client_code: "", client_name: "", holding_nature: "", tax_status: "", 
-    rm_assigned: "", branch: "", notes: "", investments: []
+    rm_assigned: "", branch: "", notes: "", investments: [], relations: []
   });
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  // --- RELATION HANDLERS ---
+  const addRelation = () => {
+    setForm(f => ({
+      ...f, relations: [...(f.relations || []), { type: "", related_to_name: "" }]
+    }));
+  };
+
+  const updateRelation = (index, field, value) => {
+    const updated = [...(form.relations || [])];
+    updated[index][field] = value;
+    setForm(f => ({ ...f, relations: updated }));
+  };
+
+  const removeRelation = (index) => {
+    const updated = (form.relations || []).filter((_, i) => i !== index);
+    setForm(f => ({ ...f, relations: updated }));
+  };
+
+  // --- INVESTMENT HANDLERS ---
   const addInvestment = () => {
     setForm(f => ({
       ...f, investments: [...(f.investments || []), { 
@@ -107,7 +183,6 @@ export default function ClientForm({ client, onSave, onClose }) {
           </select>
         </div>
 
-        {/* Updated RM Assigned Dropdown with Auto-Mapping */}
         <div>
           <Label className="text-xs text-white/50 mb-1 block uppercase tracking-wider">RM Assigned</Label>
           <select 
@@ -117,7 +192,7 @@ export default function ClientForm({ client, onSave, onClose }) {
               setForm(f => ({ 
                 ...f, 
                 rm_assigned: selectedRM,
-                branch: getBranch(selectedRM) // <-- Auto updates the branch!
+                branch: getBranch(selectedRM) 
               }));
             }} 
             className="flex h-10 w-full rounded-md border border-white/10 bg-black px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-[#008254]"
@@ -135,6 +210,59 @@ export default function ClientForm({ client, onSave, onClose }) {
         <div className="sm:col-span-2">
           <Label className="text-xs text-white/50 mb-1 block uppercase tracking-wider">Notes</Label>
           <Textarea rows={2} value={form.notes || ""} onChange={e => set("notes", e.target.value)} className="bg-black border-white/10 text-white" />
+        </div>
+      </div>
+
+      {/* --- RELATIONS BUILDER --- */}
+      <div className="mt-8 border-t border-white/10 pt-6">
+        <div className="flex items-center justify-between mb-4">
+          <h4 className="text-sm font-bold text-white uppercase tracking-wider">Family / Relations</h4>
+          <Button type="button" onClick={addRelation} size="sm" className="bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-500 border border-yellow-500/30 h-7 text-xs px-3 py-0 rounded-lg">
+            <Plus className="w-3 h-3 mr-1" /> Add Relation
+          </Button>
+        </div>
+
+        <div className="space-y-3">
+          {form.relations?.map((rel, index) => (
+            <div key={index} className="flex items-end gap-3 p-3 rounded-xl border border-white/10 bg-white/5 relative">
+              <div className="w-1/3">
+                <Label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Relation Type</Label>
+                <select 
+                  value={rel.type} 
+                  onChange={e => updateRelation(index, "type", e.target.value)} 
+                  className="flex h-9 w-full rounded-md border border-white/10 bg-black px-3 py-1 text-sm text-white focus:outline-none focus:ring-1 focus:ring-yellow-500"
+                >
+                  <option value="">Select...</option>
+                  <option value="Mother">Mother</option>
+                  <option value="Father">Father</option>
+                  <option value="Spouse">Spouse</option>
+                  <option value="Son">Son</option>
+                  <option value="Daughter">Daughter</option>
+                  <option value="Brother">Brother</option>
+                  <option value="Sister">Sister</option>
+                  <option value="HUF">HUF</option>
+                  <option value="Corporate">Corporate</option>
+                </select>
+              </div>
+
+              {/* NEW SEARCHABLE DROPDOWN */}
+              <div className="flex-1">
+                <Label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Related To</Label>
+                <ClientSearchSelect 
+                  value={rel.related_to_name} 
+                  onChange={(val) => updateRelation(index, "related_to_name", val)} 
+                  clients={allClients} 
+                />
+              </div>
+
+              <button type="button" onClick={() => removeRelation(index)} className="h-9 px-3 bg-red-500/10 text-red-500 rounded-md hover:bg-red-500/20 border border-red-500/20 flex-shrink-0">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+          {(!form.relations || form.relations.length === 0) && (
+            <p className="text-xs text-white/30 italic py-2">No relations added.</p>
+          )}
         </div>
       </div>
 
