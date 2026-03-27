@@ -51,6 +51,7 @@ import InvestmentReport from './pages/InvestmentReport';
 import ClientReview from './pages/ClientReview';
 import GoalTracker from './pages/GoalTracker' // <-- Added Import
 import __Layout from './Layout.jsx';
+import InsuranceReview from './pages/InsuranceReview'
 
 export const PAGES = {
     "CalendarView": CalendarView,
@@ -62,6 +63,7 @@ export const PAGES = {
     "Reports": Reports,
     "InvestmentReport": InvestmentReport,
     "ClientReview": ClientReview,
+    "InsuranceReview" : InsuranceReview,
     "GoalTracker": GoalTracker // <-- Added to PAGES object
 }
 

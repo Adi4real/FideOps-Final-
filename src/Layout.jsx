@@ -38,6 +38,7 @@ const navGroups = [
     items: [
       { label: "Goal Tracker", icon: Goal, page: "GoalTracker" },
       { label: "Client Review", icon: ClipboardCheck, page: "ClientReview" },
+      { label: "Insurance Review", icon: ClipboardCheck, page: "InsuranceReview" }
     ],
   },
    {

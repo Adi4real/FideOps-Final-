@@ -49,6 +49,7 @@ const ACTION_STAGES = [
   "eNACH Mandate",
   "Physical Mandate", 
   "Transaction to be initiated", 
+  "App & Broadcast",
   "Onboarding Completed"
 ];
 
