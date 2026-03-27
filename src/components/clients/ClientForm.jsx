@@ -98,7 +98,7 @@ const ClientSearchSelect = ({ value, onChange, clients = [] }) => {
 export default function ClientForm({ client, allClients, onSave, onClose }) {
   const [form, setForm] = useState(client || {
     client_code: "", client_name: "", holding_nature: "", tax_status: "", 
-    rm_assigned: "", branch: "", notes: "", investments: [], relations: []
+    rm_assigned: "", branch: "", notes: "", referred_by: "", investments: [], relations: []
   });
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -206,6 +206,15 @@ export default function ClientForm({ client, allClients, onSave, onClose }) {
           <Label className="text-xs text-white/50 mb-1 block uppercase tracking-wider">Branch</Label>
           <Input value={form.branch || ""} onChange={e => set("branch", e.target.value)} className="bg-black border-white/10 text-white" />
         </div>
+
+        <div className="sm:col-span-2">
+          <Label className="text-xs text-[#60a5fa] mb-1 block uppercase tracking-wider">Referred By</Label>
+          <ClientSearchSelect 
+            value={form.referred_by || ""} 
+            onChange={(val) => set("referred_by", val)} 
+            clients={allClients} 
+          />
+        </div>
         
         <div className="sm:col-span-2">
           <Label className="text-xs text-white/50 mb-1 block uppercase tracking-wider">Notes</Label>
@@ -245,7 +254,6 @@ export default function ClientForm({ client, allClients, onSave, onClose }) {
                 </select>
               </div>
 
-              {/* NEW SEARCHABLE DROPDOWN */}
               <div className="flex-1">
                 <Label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Related To</Label>
                 <ClientSearchSelect 

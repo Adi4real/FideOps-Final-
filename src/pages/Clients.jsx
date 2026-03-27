@@ -469,11 +469,21 @@ export default function Clients() {
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold truncate" style={{ color: isSelectedForDeletion ? "#f87171" : "var(--text-main)" }}>
             {isSubItem ? (c.tax_status && c.tax_status !== "-" ? c.tax_status : "Standard Profile") : c.client_name}
+            
+            {/* Display Relations List */}
             {c.relations && c.relations.map((rel, idx) => (
               <span key={idx} className="text-[10px] text-yellow-400 font-bold ml-2 bg-yellow-400/10 px-1.5 py-0.5 rounded border border-yellow-400/20 truncate max-w-[120px] inline-block align-bottom">
                 {rel.type} of {rel.related_to_name}
               </span>
             ))}
+            
+            {/* Display Referred By Badge */}
+            {c.referred_by && c.referred_by !== "-" && (
+              <span className="text-[10px] text-blue-400 font-bold ml-2 bg-blue-400/10 px-1.5 py-0.5 rounded border border-blue-400/20 truncate max-w-[120px] inline-block align-bottom">
+                Ref. by {c.referred_by}
+              </span>
+            )}
+            
             {!isBulkMode && !isSubItem && c.tax_status && c.tax_status !== "-" ? <span className="text-[10px] text-brand-green ml-2">({c.tax_status})</span> : ""}
           </p>
           <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
@@ -697,14 +707,19 @@ export default function Clients() {
                       </h2>
                       <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>{selected.client_code}</p>
                       
-                      {/* RELATIONS DISPLAY */}
-                      {selected.relations && selected.relations.length > 0 && (
+                      {/* RELATIONS & REFERRALS DISPLAY */}
+                      {(selected.relations?.length > 0 || (selected.referred_by && selected.referred_by !== "-")) && (
                         <div className="flex gap-2 mt-2 flex-wrap">
-                          {selected.relations.map((rel, idx) => (
+                          {selected.relations?.map((rel, idx) => (
                             <span key={idx} className="text-[10px] text-yellow-400 font-bold bg-yellow-400/10 px-2 py-0.5 rounded-md border border-yellow-400/30 tracking-wider uppercase">
                               {rel.type} of {rel.related_to_name}
                             </span>
                           ))}
+                          {selected.referred_by && selected.referred_by !== "-" && (
+                            <span className="text-[10px] text-blue-400 font-bold bg-blue-400/10 px-2 py-0.5 rounded-md border border-blue-400/30 tracking-wider uppercase">
+                              Ref. by {selected.referred_by}
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
