@@ -43,7 +43,7 @@
 import CalendarView from './pages/CalendarView';
 import Clients from './pages/Clients';
 import Dashboard from './pages/Dashboard';
-import LeadClients from './pages/LeadClients';
+import Leads from './pages/Leads.jsx';
 import LiveTasks from './pages/LiveTasks';
 import NewTask from './pages/NewTask';
 import Reports from './pages/Reports';
@@ -56,7 +56,7 @@ export const PAGES = {
     "CalendarView": CalendarView,
     "Clients": Clients,
     "Dashboard": Dashboard,
-    "LeadClients": LeadClients,
+    "Leads": Leads,
     "LiveTasks": LiveTasks,
     "NewTask": NewTask,
     "Reports": Reports,

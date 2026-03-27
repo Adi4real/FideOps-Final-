@@ -1,11 +1,25 @@
-import { useState, useEffect } from "react";
-import { X, Plus, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { X } from "lucide-react";
 
 const RM_OPTIONS = ["Ujjwal", "Ujjwal and Manny", "Ujjwal and Joel", "Uday and Joel", "Uday", "Joel", "Manny", "Prince"];
 const LEAD_CATEGORIES = ["Normal Lead", "Strong Lead"];
+
+// Updated Action Stages to match the main dashboard
 const ACTION_STAGES = [
-  "Meet Urgent", "Upcoming Meeting","Meeting In-Person", "Financial Planning", "Zoom Call", "Meeting minutes","Term", "Health", "KYC Pending",
-  "KYC Check", "NSE Platform", "Mandate", "Transaction", "App & Broadcast", "Onboarding Completed"
+  "Meet Urgent", 
+  "Upcoming Meeting", 
+  "Financial Planning",
+  "Meeting In-Person", 
+  "Zoom Call", 
+  "Meeting minutes", 
+  "KYC Pending",
+  "KYC Check", 
+  "KYC Modify", 
+  "NSE Form", 
+  "eNACH Mandate",
+  "Physical Mandate", 
+  "Transaction to be initiated", 
+  "Onboarding Completed"
 ];
 
 function getBranch(rm) {
@@ -27,8 +41,7 @@ const labelStyle = { display: "block", fontSize: "10px", fontWeight: 700, color:
 export default function LeadForm({ lead, onSave, onClose }) {
   const [form, setForm] = useState(lead || {
     lead_name: "", rm_assigned: "", branch: "", lead_source: "",
-    lead_category: "", action_stage: "", notes: "",
-    investments: [{ product_name: "", amount: "" }] // Initialize with one row
+    lead_category: "", action_stage: "", notes: ""
   });
 
   const set = (k, v) => {
@@ -37,25 +50,6 @@ export default function LeadForm({ lead, onSave, onClose }) {
     } else {
       setForm(f => ({ ...f, [k]: v }));
     }
-  };
-
-  // Investment Logic
-  const addInvestment = () => {
-    setForm(f => ({
-      ...f,
-      investments: [...(f.investments || []), { product_name: "", amount: "" }]
-    }));
-  };
-
-  const updateInvestment = (index, field, value) => {
-    const updated = [...form.investments];
-    updated[index][field] = value;
-    setForm(f => ({ ...f, investments: updated }));
-  };
-
-  const removeInvestment = (index) => {
-    const updated = form.investments.filter((_, i) => i !== index);
-    setForm(f => ({ ...f, investments: updated }));
   };
 
   return (
@@ -99,54 +93,6 @@ export default function LeadForm({ lead, onSave, onClose }) {
             {ACTION_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
-
-        {/* Conditional Transaction Inputs */}
-        {form.action_stage === "Transaction" && (
-          <div className="sm:col-span-2 space-y-3 p-4 rounded-xl" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)" }}>
-            <div className="flex items-center justify-between">
-              <p style={{ ...labelStyle, marginBottom: 0 }}>Investment Details</p>
-              <button 
-                type="button" 
-                onClick={addInvestment}
-                style={{ background: "#008254", color: "white", padding: "4px 8px", borderRadius: "6px", fontSize: "11px", display: "flex", alignItems: "center", gap: "4px", border: "none", cursor: "pointer" }}
-              >
-                <Plus className="w-3 h-3" /> Add Product
-              </button>
-            </div>
-            
-            {form.investments?.map((inv, index) => (
-              <div key={index} className="flex gap-3 items-end">
-                <div className="flex-1">
-                  {index === 0 && <label style={{ fontSize: "9px", color: "#556660", marginBottom: "4px", display: "block" }}>Product Name</label>}
-                  <input 
-                    style={inputStyle} 
-                    placeholder="e.g. HDFC Bluechip" 
-                    value={inv.product_name} 
-                    onChange={(e) => updateInvestment(index, "product_name", e.target.value)} 
-                  />
-                </div>
-                <div style={{ width: "120px" }}>
-                  {index === 0 && <label style={{ fontSize: "9px", color: "#556660", marginBottom: "4px", display: "block" }}>Amount (₹)</label>}
-                  <input 
-                    style={inputStyle} 
-                    type="number" 
-                    placeholder="5000" 
-                    value={inv.amount} 
-                    onChange={(e) => updateInvestment(index, "amount", e.target.value)} 
-                  />
-                </div>
-                {form.investments.length > 1 && (
-                  <button 
-                    onClick={() => removeInvestment(index)}
-                    style={{ background: "transparent", border: "none", color: "#f87171", padding: "8px", cursor: "pointer" }}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
 
         <div className="sm:col-span-2">
           <label style={labelStyle}>Notes</label>

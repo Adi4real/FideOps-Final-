@@ -4,7 +4,7 @@ import { AlertTriangle, Clock, CalendarCheck, Search, RefreshCw, Pencil, Check, 
 
 // Firebase Imports
 import { db } from "../firebase"; 
-import { collection, query, onSnapshot, orderBy, doc, updateDoc, deleteDoc, getDocs, where } from "firebase/firestore";
+import { collection, query, onSnapshot, orderBy, doc, updateDoc, deleteDoc, getDocs, where, addDoc, serverTimestamp } from "firebase/firestore";
 
 function getBranch(rm) {
   if (!rm) return "";
@@ -41,15 +41,18 @@ const ACTION_OPTIONS = [
   "Policy Revival", "Policy Nominee Update", "Policy Detail Update / Correction"
 ];
 
+// Sync Triggers
+const SIP_ADD_ACTIONS = ["SIP Registration", "SIP Top-up", "SIP Restart", "Lumpsum & SIP", "Lumpsum Purchase"];
+
 const STAFF_MEMBERS = ["Ujjwal", "Manny", "Uday", "Joel", "Prince", "Ujjwal and Manny", "Ujjwal and Joel", "Uday and Joel"];
 const CHANNEL_OPTIONS = ["Email", "WhatsApp", "Call", "In-Person", "Branch Visit"];
-const ALL_STATUSES = ["Pending", "Under Process", "Waiting Client", "Completed", "Cancelled"];
-const ACTIVE_STATUSES = ["Pending", "Under Process", "Waiting Client"];
+const ALL_STATUSES = ["Pending", "Under Process", "Client Approval", "Completed", "Cancelled"];
+const ACTIVE_STATUSES = ["Pending", "Under Process", "Client Approval"];
 
 const ROW_BG = {
   "Pending": "rgba(248,113,113,0.10)",
   "Under Process": "rgba(251,191,36,0.09)",
-  "Waiting Client": "rgba(96,165,250,0.09)",
+  "Client Approval": "rgba(96,165,250,0.09)",
   "Completed": "rgba(74,222,128,0.08)",
   "Cancelled": "rgba(100,116,139,0.07)",
 };
@@ -57,7 +60,7 @@ const ROW_BG = {
 const STATUS_STYLE = {
   "Pending": { bg: "rgba(248,113,113,0.15)", text: "#f87171", border: "rgba(248,113,113,0.3)" },
   "Under Process": { bg: "rgba(251,191,36,0.15)", text: "#fbbf24", border: "rgba(251,191,36,0.3)" },
-  "Waiting Client": { bg: "rgba(96,165,250,0.15)", text: "#60a5fa", border: "rgba(96,165,250,0.3)" },
+  "Client Approval": { bg: "rgba(96,165,250,0.15)", text: "#60a5fa", border: "rgba(96,165,250,0.3)" },
   "Completed": { bg: "rgba(74,222,128,0.15)", text: "#4ade80", border: "rgba(74,222,128,0.3)" },
   "Cancelled": { bg: "rgba(100,116,139,0.12)", text: "#64748b", border: "rgba(100,116,139,0.2)" },
 };
@@ -85,7 +88,6 @@ function makeGCalLink(task) {
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
 }
 
-// Safely format dates to prevent crashes
 function safeFormatDate(dateStr, formatStr) {
   if (!dateStr) return "—";
   try {
@@ -127,7 +129,7 @@ function parseTransactionItems(rawString) {
   if (!rawString) return [{ productName: "", amount: "", type: "SIP" }];
   const lines = rawString.split("\n");
   const parsed = lines.map(line => {
-    const match = line.match(/^(.*?)(?:\s*\(₹([\d.,]+)\))?(?:\s*\[(.*?)\])?$/);
+    const match = line.match(/^(.*?)(?:\s*\(?₹([\d.,]+)\)?)?(?:\s*\[(.*?)\])?$/);
     if (match) {
       return { 
         productName: match[1]?.trim() || "", 
@@ -212,7 +214,6 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
     const taskRef = doc(db, "tasks", task.id);
     await updateDoc(taskRef, update);
     
-    // Only trigger the portfolio sync if it was marked as completed JUST NOW
     if (editForm.status === "Completed" && task.status !== "Completed") {
       onStatusChange(task.id, update.status, update); 
     }
@@ -221,14 +222,12 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
     setEditing(false);
   };
 
-  // Status Change specifically for the Edit Form Dropdown
   const handleEditStatusChange = (e) => {
     const newStatus = e.target.value;
     if (newStatus === "Completed") {
       if (window.confirm("Are you sure you want to mark this task as Completed?")) {
         setEditForm(f => ({ ...f, status: newStatus }));
       }
-      // If they click cancel, React natively ignores the change because we didn't update state.
     } else {
       setEditForm(f => ({ ...f, status: newStatus }));
     }
@@ -444,7 +443,7 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
                          <span style={{ color: "#c8d4d0", fontSize: 12 }}>{item.productName}</span>
                          {item.amount && <span style={{ color: "#4ade80", fontSize: 12, fontWeight: "bold" }}>₹{Number(item.amount).toLocaleString('en-IN')}</span>}
                          
-                         {task.action === "Lumpsum & SIP" && item.type && (
+                         {["Lumpsum & SIP", "SIP Registration", "Lumpsum Purchase"].includes(task.action) && item.type && (
                            <span style={{ background: "rgba(255,255,255,0.1)", padding: "2px 6px", borderRadius: 4, fontSize: 10, color: "#fff", fontWeight: 600 }}>{item.type}</span>
                          )}
                       </div>
@@ -479,7 +478,6 @@ function EditableRow({ task, onStatusChange, onNotesUpdate, onDelete }) {
   );
 }
 
-// --- GLOBAL MEMORY CACHE (0 READS ON TAB SWITCH) ---
 let cachedTasks = [];
 let isListeningTasks = false;
 let taskSubs = new Set();
@@ -495,7 +493,6 @@ export default function LiveTasks() {
   const [exportYear, setExportYear] = useState("2025-26");
   const [refreshing, setRefreshing] = useState(false);
 
-  // --- SMART CACHED FETCH ---
   useEffect(() => {
     taskSubs.add(setTasks);
     if (!isListeningTasks) {
@@ -520,7 +517,6 @@ export default function LiveTasks() {
     setTimeout(() => setRefreshing(false), 500);
   };
 
-  // --- NEW LOGIC: Handling Auto-Addition & Deletion in Client Master ---
   const handleTaskStatusUpdate = async (taskId, newStatus, fullTaskData) => {
     if (!taskId) return;
     
@@ -531,10 +527,16 @@ export default function LiveTasks() {
     
     await updateDoc(doc(db, "tasks", taskId), update);
 
-    if (newStatus === "Completed" && fullTaskData && fullTaskData.client_code) {
+    if (newStatus === "Completed" && fullTaskData) {
       try {
         const clientsRef = collection(db, "clients");
-        const q = query(clientsRef, where("client_code", "==", fullTaskData.client_code));
+        let q;
+        if (fullTaskData.client_code) {
+           q = query(clientsRef, where("client_code", "==", fullTaskData.client_code));
+        } else {
+           q = query(clientsRef, where("client_name", "==", fullTaskData.client_name));
+        }
+        
         const clientSnapshot = await getDocs(q);
         
         if (!clientSnapshot.empty) {
@@ -554,22 +556,43 @@ export default function LiveTasks() {
               await updateDoc(doc(db, "clients", clientDoc.id), { [targetKey]: updatedPortfolio });
             }
           } 
-          else if (fullTaskData.action === "SIP Registration") { // CHANGED: Only SIP Registration
+          // --- UPDATED SYNC TRIGGER TO INCLUDE ALL SIP / LS ACTIONS ---
+          else if (SIP_ADD_ACTIONS.includes(fullTaskData.action)) { 
             const newItems = parseTransactionItems(fullTaskData.product_name).filter(i => i.productName && i.amount);
+            
             if (newItems.length > 0) {
-              const addedInvestments = newItems.map(item => ({
-                scheme_name: item.productName,
-                installment_amount: item.amount,
-                frequency_type: item.type === "LS" ? "One-time" : "Monthly",
-                folio_number: "Pending Folio",
-                xsip_reg_no: `TEMP-${Math.floor(100000 + Math.random() * 900000)}`,
-                start_date: format(new Date(), "dd-MMM-yyyy"),
-                end_date: "-",
-                type: item.type || "SIP"
-              }));
+              const addedInvestments = newItems.map(item => {
+                let finalType = item.type || "SIP";
+                if (fullTaskData.action === "Lumpsum Purchase") finalType = "LS";
+
+                return {
+                  scheme_name: item.productName,
+                  installment_amount: item.amount,
+                  frequency_type: finalType === "LS" ? "One-time" : "Monthly",
+                  folio_number: "Pending Folio",
+                  xsip_reg_no: finalType === "LS" ? "N/A" : `TEMP-${Math.floor(100000 + Math.random() * 900000)}`,
+                  start_date: format(new Date(), "dd-MMM-yyyy"),
+                  end_date: "-",
+                  type: finalType
+                };
+              });
 
               const updatedPortfolio = [...currentPortfolio, ...addedInvestments];
               await updateDoc(doc(db, "clients", clientDoc.id), { [targetKey]: updatedPortfolio });
+
+              const sipsRef = collection(db, "sips");
+              for (const inv of addedInvestments) {
+                await addDoc(sipsRef, {
+                  ...inv,
+                  client_id: clientDoc.id,
+                  client_code: clientData.client_code || "N/A",
+                  client_name: clientData.client_name,
+                  rm_assigned: clientData.rm_assigned || "Unassigned",
+                  branch: clientData.branch || "Unknown",
+                  status: "Active", 
+                  created_at: serverTimestamp()
+                });
+              }
             }
           }
         }

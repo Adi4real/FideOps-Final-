@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check, ListTodo, Info, Save, X, Target } from "lucide-react";
 
 import { db } from "../firebase"; 
-import { collection, query, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, getDocs } from "firebase/firestore";
+import { collection, query, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, where } from "firebase/firestore";
 
 import ClientImport from "@/components/clients/ClientImport.jsx";
 import ClientForm from "@/components/clients/ClientForm.jsx";
@@ -22,24 +22,9 @@ const CATEGORY_ACTIONS = {
 };
 const PRIORITIES = ["High", "Medium", "Low"];
 const CHANNELS = ["Call", "WhatsApp", "Email", "Meeting", "In-Person", "Branch Visit"];
-const SIP_ADD_ACTIONS = ["SIP Registration", "SIP Top-up", "SIP Restart"];
 
-// --- CACHING HELPERS ---
-const getLocalCache = (key) => {
-  try {
-    const cached = localStorage.getItem(key);
-    if (!cached) return null;
-    const { data, timestamp } = JSON.parse(cached);
-    if (Date.now() - timestamp > 24 * 60 * 60 * 1000) return null;
-    return data;
-  } catch(e) { return null; }
-};
-
-const setLocalCache = (key, data) => {
-  try {
-    localStorage.setItem(key, JSON.stringify({ data, timestamp: Date.now() }));
-  } catch(e) { console.error("Cache limit reached"); }
-};
+// Sync Triggers
+const SIP_ADD_ACTIONS = ["SIP Registration", "SIP Top-up", "SIP Restart", "Lumpsum & SIP", "Lumpsum Purchase"];
 
 // --- DATE FORMAT HELPERS ---
 const toInputDate = (dateStr) => {
@@ -59,12 +44,18 @@ const toDisplayDate = (dateStr) => {
   return dateStr;
 };
 
-// --- HELPER: Calculate Total SIP Amount ---
+// --- HELPER: Calculate Total SIP Amount (IGNORES LS) ---
 const getSIPTotal = (investments) => {
   return (investments || []).reduce((sum, inv) => {
+    if (inv.type === "LS" || inv.frequency_type === "One-time") return sum; 
     const amt = parseFloat(String(inv.installment_amount).replace(/,/g, ''));
     return sum + (isNaN(amt) ? 0 : amt);
   }, 0);
+};
+
+// --- HELPER: Get SIP Count (IGNORES LS) ---
+const getSipCount = (investments) => {
+  return (investments || []).filter(inv => inv.type !== "LS" && inv.frequency_type !== "One-time").length;
 };
 
 // --- HELPER: Calculate Goal Progress ---
@@ -112,10 +103,10 @@ function parseTransactionItems(rawString) {
   if (!rawString) return [{ productName: "", amount: "", type: "SIP" }];
   const lines = rawString.split("\n");
   const parsed = lines.map(line => {
-    const match = line.match(/^(.*?)(?:\s*\(₹([\d.,]+)\))?(?:\s*\[(.*?)\])?$/);
+    const match = line.match(/^(.*?)(?:\s*\(?₹?([\d.,]+)\)?)?(?:\s*\[(.*?)\])?$/);
     if (match) {
       return { 
-        productName: match[1]?.trim() || "", 
+        productName: match[1]?.replace(/\s*\($/, '').trim() || "", 
         amount: match[2]?.replace(/,/g, '')?.trim() || "",
         type: match[3]?.trim() || "SIP"
       };
@@ -134,7 +125,6 @@ export default function Clients() {
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   
   const [expandedInv, setExpandedInv] = useState(null);
   const [expandedGroup, setExpandedGroup] = useState(null);
@@ -160,50 +150,24 @@ export default function Clients() {
   const [editProductInput, setEditProductInput] = useState("");
   const [savingTaskEdit, setSavingTaskEdit] = useState(false);
 
-  // --- NEW: INLINE EDIT STATE FOR INFO/ACTION ---
+  // --- INLINE EDIT STATE FOR INFO/ACTION ---
   const [inlineEdit, setInlineEdit] = useState({ field: null, value: "", loading: false });
 
-  // Helper to sync both React State and LocalStorage instantly
-  const updateClientsState = (newClients) => {
-    setClients(newClients);
-    setLocalCache("fw_clients", newClients);
-  };
-  const updateTasksState = (newTasks) => {
-    setTasks(newTasks);
-    setLocalCache("fw_tasks", newTasks);
-  };
-
-  const fetchFreshData = async (silent = false) => {
-    if (!silent) setIsRefreshing(true);
-    try {
-      const [cSnap, tSnap] = await Promise.all([
-        getDocs(query(collection(db, "clients"), orderBy("client_name"))),
-        getDocs(query(collection(db, "tasks"), orderBy("entry_date", "desc")))
-      ]);
-      const fetchedClients = cSnap.docs.map(d => ({id: d.id, ...d.data()}));
-      const fetchedTasks = tSnap.docs.map(d => ({id: d.id, ...d.data()}));
-      
-      updateClientsState(fetchedClients);
-      updateTasksState(fetchedTasks);
-    } catch(e) {
-      console.error("Failed to fetch fresh data:", e);
-    } finally {
-      setLoading(false);
-      setIsRefreshing(false);
-    }
-  };
-
+  // REAL-TIME ONSNAPSHOT LISTENERS
   useEffect(() => {
-    const cachedC = getLocalCache("fw_clients");
-    const cachedT = getLocalCache("fw_tasks");
-
-    if (cachedC && cachedT) {
-      setClients(cachedC);
-      setTasks(cachedT);
+    setLoading(true);
+    const unsubClients = onSnapshot(query(collection(db, "clients"), orderBy("client_name")), (snap) => {
+      const fetched = snap.docs.map(d => ({id: d.id, ...d.data()}));
+      setClients(fetched);
+      setSelected(prev => fetched.find(c => c.id === prev?.id) || null);
       setLoading(false);
-    } else {
-      fetchFreshData();
-    }
+    });
+
+    const unsubTasks = onSnapshot(query(collection(db, "tasks"), orderBy("entry_date", "desc")), (snap) => {
+      setTasks(snap.docs.map(d => ({id: d.id, ...d.data()})));
+    });
+
+    return () => { unsubClients(); unsubTasks(); };
   }, []);
 
   const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
@@ -237,7 +201,7 @@ export default function Clients() {
 
   const activeFilterCount = Object.values(filters).filter(v => v !== "").length;
   
-  const clientTasksRaw = selected ? tasks.filter(t => t.client_code === selected.client_code) : [];
+  const clientTasksRaw = selected ? tasks.filter(t => t.client_code === selected.client_code || t.client_name === selected.client_name) : [];
   const clientTasks = clientTasksRaw.filter(t => taskFilter === "All" || t.status === taskFilter);
 
   const toggleBulkMode = () => { setIsBulkMode(!isBulkMode); setSelectedIds(new Set()); };
@@ -253,13 +217,11 @@ export default function Clients() {
     else setSelectedIds(new Set(filtered.map(c => c.id))); 
   };
 
-  // --- MUTATIONS ---
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
     if (!window.confirm(`Are you sure you want to permanently delete ${selectedIds.size} selected clients?`)) return;
     try {
       for (const id of selectedIds) { await deleteDoc(doc(db, "clients", id)); }
-      updateClientsState(clients.filter(c => !selectedIds.has(c.id)));
       setSelectedIds(new Set()); setIsBulkMode(false);
       if (selected && selectedIds.has(selected.id)) setSelected(null);
     } catch (error) { console.error("Error deleting clients:", error); }
@@ -269,7 +231,6 @@ export default function Clients() {
     if (!window.confirm(`Delete "${client.client_name}" permanently?`)) return;
     try { 
       await deleteDoc(doc(db, "clients", client.id)); 
-      updateClientsState(clients.filter(c => c.id !== client.id));
       if (selected?.id === client.id) setSelected(null); 
     } catch (error) { console.error("Error deleting client:", error); }
   };
@@ -279,7 +240,6 @@ export default function Clients() {
     if (!window.confirm("Are you sure you want to delete this task?")) return;
     try { 
       await deleteDoc(doc(db, "tasks", taskId)); 
-      updateTasksState(tasks.filter(t => t.id !== taskId));
     } catch (error) { console.error("Error deleting task:", error); }
   };
 
@@ -287,14 +247,11 @@ export default function Clients() {
     try {
       if (data.id) { 
         await updateDoc(doc(db, "clients", data.id), data); 
-        updateClientsState(clients.map(c => c.id === data.id ? data : c));
-        if (selected?.id === data.id) setSelected(data);
       } else {
         const tax = data.tax_status || "-";
         const exists = clients.some(c => c.client_code === data.client_code && (c.tax_status || "-") === tax);
         if (exists) { alert("A client profile with this Code and Tax Status already exists!"); return; }
-        const docRef = await addDoc(collection(db, "clients"), { ...data, created_at: serverTimestamp() });
-        updateClientsState([...clients, { id: docRef.id, ...data }]);
+        await addDoc(collection(db, "clients"), { ...data, created_at: serverTimestamp() });
       }
       setShowForm(false); setEditClient(null);
     } catch (error) { console.error("Error saving client:", error); }
@@ -305,9 +262,6 @@ export default function Clients() {
     setInlineEdit({ ...inlineEdit, loading: true });
     try {
       await updateDoc(doc(db, "clients", selected.id), { [inlineEdit.field]: inlineEdit.value });
-      const updatedClient = { ...selected, [inlineEdit.field]: inlineEdit.value };
-      setSelected(updatedClient);
-      updateClientsState(clients.map(c => c.id === selected.id ? updatedClient : c));
       setInlineEdit({ field: null, value: "", loading: false });
     } catch (error) {
       console.error("Error inline saving:", error);
@@ -320,16 +274,19 @@ export default function Clients() {
       const update = { status: newStatus };
       if (newStatus === "Completed") update.closure_date = format(new Date(), "yyyy-MM-dd");
       await updateDoc(doc(db, "tasks", taskId), update);
-      
-      updateTasksState(tasks.map(t => t.id === taskId ? { ...t, ...update } : t));
 
-      if (newStatus === "Completed" && fullTaskData && fullTaskData.client_code) {
-        const targetClient = clients.find(c => c.client_code === fullTaskData.client_code);
+      if (newStatus === "Completed" && fullTaskData) {
+        const targetClient = clients.find(c => 
+          (c.client_code && c.client_code === fullTaskData.client_code) || 
+          c.client_name === fullTaskData.client_name
+        );
+        
         if (targetClient) {
           const targetKey = Object.keys(targetClient).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
           let currentPortfolio = targetClient[targetKey] || [];
           let modified = false;
 
+          // 1. Handle Cancellations
           if (fullTaskData.action === "SIP Cancellation") {
             const cancelledSchemes = parseTransactionItems(fullTaskData.product_name).map(i => i.productName.toLowerCase().trim());
             if (cancelledSchemes.length > 0) {
@@ -342,25 +299,48 @@ export default function Clients() {
                 modified = true;
               }
             }
-          } else if (fullTaskData.action === "SIP Registration") { 
+          } 
+          // 2. Handle additions from SIPs AND Lumpsums 
+          else if (SIP_ADD_ACTIONS.includes(fullTaskData.action)) { 
             const newItems = parseTransactionItems(fullTaskData.product_name).filter(i => i.productName && i.amount);
             if (newItems.length > 0) {
-              const addedInvestments = newItems.map(item => ({
-                scheme_name: item.productName, installment_amount: item.amount,
-                frequency_type: item.type === "LS" ? "One-time" : "Monthly",
-                folio_number: "Pending Folio", xsip_reg_no: `TEMP-${Math.floor(100000 + Math.random() * 900000)}`,
-                start_date: format(new Date(), "dd-MMM-yyyy"), end_date: "-", type: item.type || "SIP"
-              }));
+              const addedInvestments = newItems.map(item => {
+                let finalType = item.type || "SIP";
+                if (fullTaskData.action === "Lumpsum Purchase") finalType = "LS";
+
+                return {
+                  scheme_name: item.productName, 
+                  installment_amount: item.amount,
+                  frequency_type: finalType === "LS" ? "One-time" : "Monthly",
+                  folio_number: "Pending Folio", 
+                  xsip_reg_no: finalType === "LS" ? "N/A" : `TEMP-${Math.floor(100000 + Math.random() * 900000)}`,
+                  start_date: format(new Date(), "dd-MMM-yyyy"), 
+                  end_date: "-", 
+                  type: finalType
+                };
+              });
+              
               currentPortfolio = [...currentPortfolio, ...addedInvestments];
               modified = true;
+
+              const sipsRef = collection(db, "sips");
+              for (const inv of addedInvestments) {
+                await addDoc(sipsRef, {
+                  ...inv,
+                  client_id: targetClient.id,
+                  client_code: targetClient.client_code || "N/A",
+                  client_name: targetClient.client_name,
+                  rm_assigned: targetClient.rm_assigned || "Unassigned",
+                  branch: targetClient.branch || "Unknown",
+                  status: "Active",
+                  created_at: serverTimestamp()
+                });
+              }
             }
           }
 
           if (modified) {
             await updateDoc(doc(db, "clients", targetClient.id), { [targetKey]: currentPortfolio });
-            const finalClientObj = { ...targetClient, [targetKey]: currentPortfolio };
-            updateClientsState(clients.map(c => c.id === targetClient.id ? finalClientObj : c));
-            if (selected?.id === targetClient.id) setSelected(finalClientObj);
           }
         }
       }
@@ -396,7 +376,6 @@ export default function Clients() {
       }
 
       await updateDoc(doc(db, "tasks", editingTaskId), updateData);
-      updateTasksState(tasks.map(t => t.id === editingTaskId ? updateData : t));
       setEditingTaskId(null);
     } catch (e) { console.error("Error saving task:", e); } 
     finally { setSavingTaskEdit(false); }
@@ -408,28 +387,23 @@ export default function Clients() {
       const targetKey = Object.keys(selected).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
       const updatedPortfolio = [...(selected[targetKey] || [])];
       const finalFormToSave = { ...invForm };
-      delete finalFormToSave.originalIndex;
-      updatedPortfolio[editingInv] = finalFormToSave;
       
-      const updatedClient = { ...selected, [targetKey]: updatedPortfolio };
-      setSelected(updatedClient);
-      updateClientsState(clients.map(c => c.id === selected.id ? updatedClient : c));
+      // Preserve the item's position in the raw database array
+      const targetIndex = finalFormToSave.originalIndex;
+      delete finalFormToSave.originalIndex;
+      updatedPortfolio[targetIndex] = finalFormToSave;
 
       await updateDoc(doc(db, "clients", selected.id), { [targetKey]: updatedPortfolio });
       setEditingInv(null); setExpandedInv(null);
     } catch (error) { console.error("Error saving investment:", error); }
   };
 
-  const handleDeleteInvestment = async (index) => {
+  const handleDeleteInvestment = async (originalIndex) => {
     if (!window.confirm("Are you sure you want to permanently delete this SIP?")) return;
     try {
       const targetKey = Object.keys(selected).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
       const updatedPortfolio = [...(selected[targetKey] || [])];
-      updatedPortfolio.splice(index, 1);
-      
-      const updatedClient = { ...selected, [targetKey]: updatedPortfolio };
-      setSelected(updatedClient);
-      updateClientsState(clients.map(c => c.id === selected.id ? updatedClient : c));
+      updatedPortfolio.splice(originalIndex, 1);
 
       await updateDoc(doc(db, "clients", selected.id), { [targetKey]: updatedPortfolio });
       setEditingInv(null); setExpandedInv(null);
@@ -487,7 +461,7 @@ export default function Clients() {
             {!isBulkMode && !isSubItem && c.tax_status && c.tax_status !== "-" ? <span className="text-[10px] text-brand-green ml-2">({c.tax_status})</span> : ""}
           </p>
           <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
-            {c.client_code} · {c.branch} {!isBulkMode && c.investments?.length ? `(${c.investments.length} SIPs)` : ""}
+            {c.client_code} · {c.branch} {!isBulkMode && getSipCount(c.investments) > 0 ? `(${getSipCount(c.investments)} SIPs)` : ""}
           </p>
         </div>
         {!isBulkMode && <ChevronRight className="w-4 h-4 flex-shrink-0" style={{ color: "var(--text-muted)" }} />}
@@ -496,6 +470,11 @@ export default function Clients() {
   };
 
   const inputStyle = { padding: "6px 10px", borderRadius: 6, background: "#0a1612", border: "1px solid rgba(255,255,255,0.15)", color: "#c8d4d0", fontSize: 12, width: "100%" };
+
+  // Generate filtered portfolio items (SIPs ONLY) mapping to their true index for safe deletion/edits
+  const sipInvestmentsWithIndex = selected ? (selected.investments || [])
+    .map((inv, idx) => ({ ...inv, originalIndex: idx }))
+    .filter(inv => inv.type !== "LS" && inv.frequency_type !== "One-time") : [];
 
   return (
     <div className="p-4 lg:p-8 space-y-6" style={{ background: "var(--bg-black)", minHeight: "100vh", color: "var(--text-main)" }}>
@@ -512,9 +491,6 @@ export default function Clients() {
           <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>{clients.length} profiles / {groupedClients.length} unique names</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => fetchFreshData()} className="p-2 rounded-xl transition-colors hover:bg-white/10" style={{ background: "var(--glass)", border: "1px solid var(--border)", color: "var(--text-muted)" }} title="Fetch latest database updates">
-            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-brand-green' : ''}`} />
-          </button>
           <button onClick={() => setShowImport(v => !v)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all" style={{ background: "var(--glass)", border: "1px solid var(--brand-green)", color: "var(--brand-green)" }}>
             <Upload className="w-4 h-4" /> Import Excel
           </button>
@@ -524,9 +500,8 @@ export default function Clients() {
         </div>
       </div>
 
-      {showImport && <ClientImport onImportDone={() => { setShowImport(false); fetchFreshData(); }} onClose={() => setShowImport(false)} />}
+      {showImport && <ClientImport onImportDone={() => setShowImport(false)} onClose={() => setShowImport(false)} />}
       
-      {/* Pass allClients={clients} to ClientForm */}
       {showForm && <ClientForm client={editClient} allClients={clients} onSave={handleSave} onClose={closeForm} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -637,7 +612,7 @@ export default function Clients() {
           
           <div className="overflow-y-auto flex-1 z-10 custom-scrollbar">
             {loading ? (
-              <div className="p-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>Loading...</div>
+              <div className="p-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>Loading database...</div>
             ) : filtered.length === 0 ? (
               <div className="p-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>No clients match the criteria</div>
             ) : (
@@ -814,7 +789,7 @@ export default function Clients() {
                   </button>
                   <button onClick={() => setActiveTab('portfolio')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'portfolio' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}>
                     <Wallet className="w-4 h-4" />
-                    SIP ({selected.investments?.length || 0})
+                    SIPs ({sipInvestmentsWithIndex.length})
                   </button>
                   <button onClick={() => setActiveTab('goals')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'goals' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}>
                     <Target className="w-4 h-4" />
@@ -921,7 +896,9 @@ export default function Clients() {
                                         <div key={idx} className="flex items-center gap-3 bg-white/5 px-3 py-2 rounded-lg w-fit border border-white/5">
                                           <span className="text-xs text-[#c8d4d0]">{item.productName}</span>
                                           {item.amount && <span className="text-xs font-bold text-[#4ade80]">₹{Number(item.amount).toLocaleString('en-IN')}</span>}
-                                          {t.action === "Lumpsum & SIP" && item.type && (<span className="bg-white/10 px-1.5 py-0.5 rounded text-[9px] font-bold text-white uppercase">{item.type}</span>)}
+                                          {["Lumpsum & SIP", "SIP Registration", "Lumpsum Purchase"].includes(t.action) && item.type && (
+                                            <span style={{ background: item.type === "LS" ? "rgba(59,130,246,0.15)" : "rgba(255,255,255,0.1)", color: item.type === "LS" ? "#60a5fa" : "#fff", padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 600 }}>{item.type}</span>
+                                          )}
                                         </div>
                                       )) : (
                                         <div className="flex flex-wrap gap-2">
@@ -1031,7 +1008,7 @@ export default function Clients() {
                   </div>
                 )}
 
-                {/* TAB 2: INVESTMENT PORTFOLIO */}
+                {/* TAB 2: INVESTMENT PORTFOLIO (SIPS ONLY) */}
                 {activeTab === "portfolio" && (
                   <div className="animate-in fade-in duration-200">
                     <div className="flex justify-end mb-4">
@@ -1040,18 +1017,14 @@ export default function Clients() {
                       </span>
                     </div>
 
-                    {(!selected.investments || selected.investments.length === 0) ? (
+                    {sipInvestmentsWithIndex.length === 0 ? (
                       <div className="text-center py-12 border border-dashed border-white/10 rounded-xl bg-black/20">
-                        <p className="text-sm text-[#889995] mb-4">No investment records found.</p>
-                        <button onClick={() => openEdit(selected)} className="text-xs font-bold text-brand-green border border-brand-green/30 px-4 py-2 rounded-lg hover:bg-brand-green hover:text-white transition-all">
-                          + Add First Investment
-                        </button>
+                        <p className="text-sm text-[#889995] mb-4">No active SIPs found.</p>
                       </div>
                     ) : (
                       <div className="space-y-6 max-h-[500px] overflow-y-auto pr-1 custom-scrollbar">
                         {Object.entries(
-                          (selected.investments || []).map((inv, idx) => ({ ...inv, originalIndex: idx }))
-                          .reduce((acc, inv) => {
+                          sipInvestmentsWithIndex.reduce((acc, inv) => {
                             const folio = inv.folio_number && inv.folio_number !== "-" ? inv.folio_number : "Unassigned Folios";
                             if (!acc[folio]) acc[folio] = [];
                             acc[folio].push(inv);
@@ -1162,7 +1135,7 @@ export default function Clients() {
                   </div>
                 )}
 
-                {/* TAB 3: FINANCIAL GOALS (NEW) */}
+                {/* TAB 3: FINANCIAL GOALS */}
                 {activeTab === "goals" && (
                   <div className="animate-in fade-in duration-200">
                     {(!selected.financial_goals || selected.financial_goals.length === 0) ? (

@@ -125,7 +125,7 @@ const CATEGORY_ACTIONS = {
   "Health": ["New Policy Purchase", "Policy Renewal", "Policy Servicing", "Policy Surrender", "Policy Claim Assistance", "Policy Revival", "Policy Nominee Update", "Policy Detail Update / Correction"],
 };
 
-const CHANNELS = ["Call", "WhatsApp", "Email", "Meeting"];
+const CHANNELS = ["WhatsApp","Call", "Email", "Meeting"];
 const PRIORITIES = ["High", "Medium", "Low"];
 
 // ACTIONS THAT BEHAVE LIKE SIP REGISTRATION
@@ -173,7 +173,7 @@ export default function NewTask() {
     client_name: "", client_code: "", rm_assigned: "", branch: "",
     category: "Service", action: "", product_name: "", notes: "",
     amount: "", priority: "Medium", assigned_to: "",
-    follow_up_date: "", channel: "Call", status: "Pending",
+    follow_up_date: "", channel: "WhatsApp", status: "Pending", // <-- CHANGED THIS LINE
     financial_year: getFinancialYear(),
   });
 
@@ -320,10 +320,20 @@ export default function NewTask() {
       ? transactionItems.filter(i => !i.isExisting)
       : transactionItems;
 
-  const totalTransactionAmount = activeItemsForTotal.reduce((sum, item) => {
+  // --- SEPARATE SIP vs LS TOTALS ---
+  const { totalSIP, totalLS } = activeItemsForTotal.reduce((acc, item) => {
     const val = parseFloat(item.amount);
-    return sum + (isNaN(val) ? 0 : val);
-  }, 0);
+    if (!isNaN(val) && val > 0) {
+      if (form.action === "Lumpsum Purchase" || item.type === "LS") {
+        acc.totalLS += val;
+      } else {
+        acc.totalSIP += val;
+      }
+    }
+    return acc;
+  }, { totalSIP: 0, totalLS: 0 });
+
+  const totalTransactionAmount = totalSIP + totalLS;
 
   const getAmountLabel = () => (form.action) ? `${form.action} Amount (₹)` : "Total Amount (₹)";
 
@@ -634,15 +644,32 @@ export default function NewTask() {
                       </button>
                     )}
 
-                    {totalTransactionAmount > 0 && (
-                      <div style={{ marginTop: "16px", padding: "12px", background: form.action === "SIP Cancellation" ? "rgba(248,113,113,0.1)" : "rgba(0,130,84,0.1)", border: form.action === "SIP Cancellation" ? "1px solid rgba(248,113,113,0.2)" : "1px solid rgba(0,130,84,0.2)", borderRadius: "10px" }}>
-                        <p style={{ fontSize: 11, color: "#889995", textTransform: "uppercase", fontWeight: 700, marginBottom: 2 }}>
-                          {SIP_ADD_ACTIONS.includes(form.action) ? "New SIP Total" : form.action === "SIP Cancellation" ? "Total Value to Cancel" : "Grand Total"}
-                        </p>
-                        <p style={{ fontSize: 16, color: form.action === "SIP Cancellation" ? "#f87171" : "white", fontWeight: 700 }}>₹{totalTransactionAmount.toLocaleString('en-IN')}</p>
-                        <p style={{ fontSize: 11, color: form.action === "SIP Cancellation" ? "#f87171" : "#4ade80", marginTop: 4, fontWeight: 600, fontStyle: "italic" }}>
-                          {numberToWords(totalTransactionAmount)}
-                        </p>
+                    {/* --- SPLIT TOTALS DISPLAY --- */}
+                    {(totalSIP > 0 || totalLS > 0) && (
+                      <div style={{ display: "flex", gap: "12px", marginTop: "16px" }}>
+                        {totalSIP > 0 && (
+                          <div style={{ flex: 1, padding: "12px", background: form.action === "SIP Cancellation" ? "rgba(248,113,113,0.1)" : "rgba(0,130,84,0.1)", border: form.action === "SIP Cancellation" ? "1px solid rgba(248,113,113,0.2)" : "1px solid rgba(0,130,84,0.2)", borderRadius: "10px" }}>
+                            <p style={{ fontSize: 11, color: "#889995", textTransform: "uppercase", fontWeight: 700, marginBottom: 2 }}>
+                              {form.action === "SIP Cancellation" ? "Total SIP to Cancel" : "Total SIP"}
+                            </p>
+                            <p style={{ fontSize: 16, color: form.action === "SIP Cancellation" ? "#f87171" : "white", fontWeight: 700 }}>₹{totalSIP.toLocaleString('en-IN')}</p>
+                            <p style={{ fontSize: 11, color: form.action === "SIP Cancellation" ? "#f87171" : "#4ade80", marginTop: 4, fontWeight: 600, fontStyle: "italic" }}>
+                              {numberToWords(totalSIP)}
+                            </p>
+                          </div>
+                        )}
+
+                        {totalLS > 0 && (
+                          <div style={{ flex: 1, padding: "12px", background: form.action === "SIP Cancellation" ? "rgba(248,113,113,0.1)" : "rgba(59,130,246,0.1)", border: form.action === "SIP Cancellation" ? "1px solid rgba(248,113,113,0.2)" : "1px solid rgba(59,130,246,0.2)", borderRadius: "10px" }}>
+                            <p style={{ fontSize: 11, color: "#889995", textTransform: "uppercase", fontWeight: 700, marginBottom: 2 }}>
+                              {form.action === "SIP Cancellation" ? "Total Lumpsum to Cancel" : "Total Lumpsum"}
+                            </p>
+                            <p style={{ fontSize: 16, color: form.action === "SIP Cancellation" ? "#f87171" : "white", fontWeight: 700 }}>₹{totalLS.toLocaleString('en-IN')}</p>
+                            <p style={{ fontSize: 11, color: form.action === "SIP Cancellation" ? "#f87171" : "#60a5fa", marginTop: 4, fontWeight: 600, fontStyle: "italic" }}>
+                              {numberToWords(totalLS)}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

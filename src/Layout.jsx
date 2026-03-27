@@ -21,7 +21,7 @@ const navGroups = [
   },
   {
     label: "Client Management",
-    items: [{ label: "Lead Clients", icon: Users, page: "LeadClients" },
+    items: [{ label: "Leads", icon: Users, page: "Leads" },
               { label: "Clients", icon: Users, page: "Clients" }
     ],
   },

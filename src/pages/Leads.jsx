@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Search, Plus, Upload, Pencil, Trash2, RefreshCw, CalendarPlus } from "lucide-react";
+import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, CalendarPlus } from "lucide-react";
 
 // Firebase Imports
 import { db } from "../firebase"; 
@@ -32,15 +32,24 @@ function makeGCalLeadLink(lead) {
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
 }
 
-// Updated Categories
 const LEAD_CATEGORIES = ["Normal Lead", "Strong Lead"];
 
-// Updated Action Stages (Moved 3 from categories, removed Documentation Complete)
+// Updated Action Stages (Reordered, Physical KYC removed, Transaction to be initiated added)
 const ACTION_STAGES = [
-  "Meet Urgent", "Upcoming Meeting", "Financial Planning",
-  "Meeting In-Person", "Zoom Call", "Meeting minutes", "KYC Pending",
-  "KYC Check", "KYC Modify", "NSE Form", "eNACH Mandate",
-  "Physical Mandate", "Physical KYC", "Onboarding Completed"
+  "Meet Urgent", 
+  "Upcoming Meeting", 
+  "Financial Planning",
+  "Meeting In-Person", 
+  "Zoom Call", 
+  "Meeting minutes", 
+  "KYC Pending",
+  "KYC Check", 
+  "KYC Modify", 
+  "NSE Form", 
+  "eNACH Mandate",
+  "Physical Mandate", 
+  "Transaction to be initiated", 
+  "Onboarding Completed"
 ];
 
 async function generateLeadCode(leads) {
@@ -62,6 +71,7 @@ const categoryColor = {
 
 const stageColor = (stage) => {
   if (stage === "Onboarding Completed") return { bg: "rgba(0,130,84,0.25)", text: "#4ade80" };
+  if (stage === "Transaction to be initiated") return { bg: "rgba(56,189,248,0.2)", text: "#7dd3fc" };
   if (["KYC Pending", "KYC Check", "KYC Modify"].includes(stage)) return { bg: "rgba(245,158,11,0.2)", text: "#fbbf24" };
   if (stage === "Meet Urgent") return { bg: "rgba(220,38,38,0.2)", text: "#f87171" };
   if (stage === "Upcoming Meeting") return { bg: "rgba(245,158,11,0.2)", text: "#fbbf24" };
@@ -146,33 +156,84 @@ export default function LeadClients() {
 
   const handleStageChange = async (lead, newStage) => {
     try {
-      if (newStage === "Onboarding Completed") {
+      const leadRef = doc(db, "leads", lead.id);
+
+      // --- LOGIC 1: Transaction to be initiated ---
+      // Adds the client to the master but keeps the lead visible on this screen
+      if (newStage === "Transaction to be initiated") {
         setConverting(lead.id);
         
-        const clientCode = lead.lead_code ? lead.lead_code.replace("LD-", "FW-C-") : `FW-C-${Date.now()}`;
-        const clientRef = collection(db, "clients");
-        const newClient = await addDoc(clientRef, {
-          client_code: clientCode,
-          client_name: lead.lead_name,
-          rm_assigned: lead.rm_assigned || "",
-          branch: lead.branch || "",
-          notes: lead.notes || "",
-          created_at: serverTimestamp(),
-          converted_from_lead: lead.id
-        });
+        let clientId = lead.converted_client_id;
 
-        const leadRef = doc(db, "leads", lead.id);
+        // Check if we already created the client earlier to avoid duplicates
+        if (!clientId) {
+          const clientCode = lead.lead_code ? lead.lead_code.replace("LD-", "FW-C-") : `FW-C-${Date.now()}`;
+          const newClient = await addDoc(collection(db, "clients"), {
+            client_code: clientCode,
+            client_name: lead.lead_name,
+            rm_assigned: lead.rm_assigned || "-",
+            branch: lead.branch || "-",
+            client_info: lead.notes || "-",
+            client_action: "-",
+            holding_nature: "SINGLE",
+            tax_status: "INDIVIDUAL",
+            investments: [],
+            relations: [],
+            created_at: serverTimestamp(),
+            converted_from_lead: lead.id
+          });
+          clientId = newClient.id;
+        }
+
+        // Update lead stage but keep status "Active"
         await updateDoc(leadRef, {
           action_stage: newStage,
-          status: "Converted",
-          converted_client_id: newClient.id,
+          converted_client_id: clientId || null
         });
         
         setConverting(null);
+
+      // --- LOGIC 2: Onboarding Completed ---
+      // Marks the lead as converted, removing it from this screen completely
+      } else if (newStage === "Onboarding Completed") {
+        setConverting(lead.id);
+        
+        let clientId = lead.converted_client_id;
+
+        // If they skipped the Transaction phase and went straight to Onboarding Completed
+        if (!clientId) {
+          const clientCode = lead.lead_code ? lead.lead_code.replace("LD-", "FW-C-") : `FW-C-${Date.now()}`;
+          const newClient = await addDoc(collection(db, "clients"), {
+            client_code: clientCode,
+            client_name: lead.lead_name,
+            rm_assigned: lead.rm_assigned || "-",
+            branch: lead.branch || "-",
+            client_info: lead.notes || "-",
+            client_action: "-",
+            holding_nature: "SINGLE",
+            tax_status: "INDIVIDUAL",
+            investments: [],
+            relations: [],
+            created_at: serverTimestamp(),
+            converted_from_lead: lead.id
+          });
+          clientId = newClient.id;
+        }
+
+        // Remove from leads table view by changing status to "Converted"
+        await updateDoc(leadRef, {
+          action_stage: newStage,
+          status: "Converted",
+          converted_client_id: clientId || null
+        });
+        
+        setConverting(null);
+
+      // --- LOGIC 3: Any other stage ---
       } else {
-        const leadRef = doc(db, "leads", lead.id);
         await updateDoc(leadRef, { action_stage: newStage });
       }
+
     } catch (error) {
       console.error("Error updating stage:", error);
       setConverting(null);
@@ -287,7 +348,7 @@ export default function LeadClients() {
                         <option value="">Select Stage</option>
                         {ACTION_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
-                      {isConverting && <span style={{ fontSize: 10, color: "#4ade80", marginLeft: 6 }}>Converting...</span>}
+                      {isConverting && <span style={{ fontSize: 10, color: "#4ade80", marginLeft: 6 }}>Processing...</span>}
                     </td>
                     <td style={{ padding: "14px 12px" }}>
                       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
