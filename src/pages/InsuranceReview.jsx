@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom'; // Added useLocation
 import * as XLSX from 'xlsx';
-import { parse, isBefore, startOfDay, isValid } from 'date-fns';
-import { UploadCloud, Trash2, CheckCircle, AlertCircle, Clock, Search, X, Edit2 } from 'lucide-react';
+import { parse, isValid, format, isBefore, startOfDay, isSameMonth, parseISO } from 'date-fns';
+import { UploadCloud, Trash2, CheckCircle, AlertCircle, Search, X, Edit2, Target, Clock } from 'lucide-react';
 
 // FIREBASE IMPORTS
 // ⚠️ Ensure this path points to your actual firebase.js config file
@@ -9,6 +10,8 @@ import { db } from '../firebase';
 import { collection, doc, writeBatch, getDocs, deleteDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 
 export default function InsuranceReview() {
+  const location = useLocation(); // Hook to get router state
+
   const [policies, setPolicies] = useState([]);
   const [loading, setLoading] = useState(false);
   
@@ -17,22 +20,38 @@ export default function InsuranceReview() {
   const [selectedRows, setSelectedRows] = useState([]);
   const fileInputRef = useRef(null);
 
-  // Filters - By default, dates are empty so it shows EVERYTHING
+  // Filters - Initially populated by router state if it exists
   const [filters, setFilters] = useState({
-    startDate: '',
-    endDate: '',
-    status: 'All',
+    startDate: location.state?.filterStartDate || '',
+    endDate: location.state?.filterEndDate || '',
+    status: location.state?.filterStatus || 'All',
     planType: 'All',
     ecs: 'All',
     search: ''
   });
 
+  // Stats Filter
+  const [statsPlanType, setStatsPlanType] = useState('All');
+
+  // --- Catch routing updates if user navigates to this page while already on it ---
+  useEffect(() => {
+    if (location.state) {
+      setFilters(prev => ({
+        ...prev,
+        startDate: location.state.filterStartDate || prev.startDate,
+        endDate: location.state.filterEndDate || prev.endDate,
+        status: location.state.filterStatus || prev.status
+      }));
+    }
+  }, [location.state]);
+
   // --- Date Helper ---
+  // Parses DD/MM/YYYY or YYYY-MM-DD back and forth safely
   const parseDateString = (dateStr) => {
     if (!dateStr) return new Date(NaN);
-    let parsed = new Date(dateStr);
+    let parsed = parse(dateStr, 'dd/MM/yyyy', new Date());
     if (!isValid(parsed)) {
-      parsed = parse(dateStr, 'dd-MMM-yyyy', new Date());
+      parsed = new Date(dateStr);
     }
     return parsed;
   };
@@ -61,25 +80,38 @@ export default function InsuranceReview() {
       const worksheet = workbook.Sheets[sheetName];
       const rawJson = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
 
-      const formattedData = rawJson.map(row => ({
-        srNo: row['Sr No.'] || '',
-        planType: row['Plan Type'] || '',
-        plan: row['Plan'] || '',
-        policyNo: row['Existing Policy No.'] || '',
-        policyHolder: row['Policy Holder'] || '',
-        dueDate: row['Premium Due Date'] || '',
-        duePremium: row['Due Premium ( 1 Year )'] || '',
-        vehicleReg: row['Vehicle Regn No.'] || '',
-        grossPremium: row['Last Premium Paid Amount / Premium Due Amount (Gross Premium) '] || '',
-        ecs: row['ECS/ Non ECS'] || '',
-        renewalNotice: row['Renewal Notice '] || '',
-        noticeRemark: row['Renewal Notice Remark'] || '',
-        renewalStatus: row['Renewal Status'] || 'Pending',
-        newPolicyNo: row['New Policy Number'] || '',
-        renewedGross: row['Renewed Gross Premium '] || '',
-        renewedNet: row['Renewed Net Premium'] || '',
-        lastIntimation: row['Last Intimation Sent date '] || ''
-      })).filter(p => p.policyNo !== ""); 
+      // Dynamically find the long column name for Premium Amount
+      const getPremium = (row) => {
+        const key = Object.keys(row).find(k => k.includes('Last Premium Paid Amount') || k.includes('Gross Premium'));
+        return row[key] || row['Due Premium ( 1 Year )'] || '';
+      };
+
+      const formattedData = rawJson.map(row => {
+        // Enforce only Renewed or Not Renewed
+        const rawStatus = String(row['Renewal Status'] || '').toLowerCase();
+        const cleanStatus = rawStatus.includes('not') ? 'Not Renewed' : 'Renewed';
+
+        return {
+          srNo: String(row['Sr No.'] || '').trim(),
+          planType: String(row['Plan Type'] || '').trim(),
+          plan: String(row['Plan'] || '').trim(),
+          policyNo: String(row['Existing Policy No.'] || '').trim(),
+          policyHolder: String(row['Policy Holder'] || '').trim(),
+          dueDate: String(row['Premium Due Date'] || '').trim(), 
+          premiumAmount: getPremium(row),
+          vehicleReg: String(row['Vehicle Regn No.'] || '').trim(),
+          ecs: String(row['ECS/ Non ECS'] || '').trim(),
+          renewalStatus: cleanStatus,
+        };
+      }).filter(p => {
+        // FILTER OUT EMPTY POLICIES AND THE EXCEL "TOTAL" GHOST ROW
+        const isTotalRow = 
+          p.srNo.toLowerCase().includes('total') || 
+          p.policyNo.toLowerCase().includes('total') || 
+          p.policyHolder.toLowerCase().includes('total');
+          
+        return p.policyNo !== "" && !isTotalRow;
+      }); 
 
       try {
         const policiesRef = collection(db, 'insurance_policies');
@@ -92,8 +124,7 @@ export default function InsuranceReview() {
         let opCount = 0;
         
         let newCount = 0;
-        let updatedCount = 0;
-        let skippedCount = 0;
+        let updatedCount = 0; // Treated as Overwrites now
 
         for (const policy of formattedData) {
           const safeDocId = String(policy.policyNo).replace(/\//g, '-');
@@ -101,21 +132,17 @@ export default function InsuranceReview() {
           const existing = existingPolicies[safeDocId];
 
           if (existing) {
-            if (existing.renewalStatus !== policy.renewalStatus || 
-                existing.dueDate !== policy.dueDate || 
-                existing.duePremium !== policy.duePremium) {
-              batches[batchIndex].update(docRef, policy);
-              updatedCount++;
-              opCount++;
-            } else {
-              skippedCount++;
-            }
+            // OVERWRITE ENTIRELY based on policy number
+            batches[batchIndex].set(docRef, policy);
+            updatedCount++;
           } else {
+            // NEW RECORD
             batches[batchIndex].set(docRef, policy);
             newCount++;
-            opCount++;
           }
+          opCount++;
 
+          // Firestore allows 500 operations per batch
           if (opCount >= 490) {
             batches.push(writeBatch(db));
             batchIndex++;
@@ -124,7 +151,7 @@ export default function InsuranceReview() {
         }
 
         for (const b of batches) { await b.commit(); }
-        setUploadSummary({ new: newCount, updated: updatedCount, skipped: skippedCount });
+        setUploadSummary({ new: newCount, updated: updatedCount, skipped: 0 });
       } catch (error) {
         console.error("Firebase Upload failed:", error);
         alert("Failed to sync data with Firebase.");
@@ -179,24 +206,20 @@ export default function InsuranceReview() {
     setSelectedRows(prev => prev.includes(id) ? prev.filter(rowId => rowId !== id) : [...prev, id]);
   };
 
-  // --- Filtering (Now supports Date Range) ---
+  // --- Filtering ---
   const filteredPolicies = policies.filter(p => {
     const pDate = parseDateString(p.dueDate);
     let matchDate = true;
 
-    // Check Date Range if either start or end is provided
     if (isValid(pDate)) {
-      const policyDateStart = startOfDay(pDate);
       if (filters.startDate && filters.endDate) {
-        matchDate = policyDateStart >= startOfDay(new Date(filters.startDate)) && 
-                    policyDateStart <= startOfDay(new Date(filters.endDate));
+        matchDate = pDate >= new Date(filters.startDate) && pDate <= new Date(filters.endDate);
       } else if (filters.startDate) {
-        matchDate = policyDateStart >= startOfDay(new Date(filters.startDate));
+        matchDate = pDate >= new Date(filters.startDate);
       } else if (filters.endDate) {
-        matchDate = policyDateStart <= startOfDay(new Date(filters.endDate));
+        matchDate = pDate <= new Date(filters.endDate);
       }
     } else if (filters.startDate || filters.endDate) {
-      // If a filter is applied but the policy has a bad date, filter it out
       matchDate = false;
     }
 
@@ -209,21 +232,21 @@ export default function InsuranceReview() {
     return matchDate && matchStatus && matchPlan && matchEcs && matchSearch;
   });
 
-  // --- Dynamic KPI Calculations (Based on Filtered Data) ---
-  const today = startOfDay(new Date());
+  // --- Dynamic KPI Calculations ---
+  // Apply the extra Plan Type filter specifically for the Total Premium calculation
+  const statsFilteredPolicies = statsPlanType === 'All' 
+    ? filteredPolicies 
+    : filteredPolicies.filter(p => p.planType === statsPlanType);
+
+  const totalPremiumValue = statsFilteredPolicies.reduce((sum, p) => {
+    const val = parseFloat(String(p.premiumAmount).replace(/,/g, '')) || 0;
+    return sum + val;
+  }, 0);
 
   const kpis = {
     renewed: filteredPolicies.filter(p => p.renewalStatus?.toLowerCase().includes('renewed') && !p.renewalStatus?.toLowerCase().includes('not')).length,
-    overdue: filteredPolicies.filter(p => {
-      const dDate = parseDateString(p.dueDate);
-      const isNotRenewed = p.renewalStatus?.toLowerCase().includes('not') || p.renewalStatus?.toLowerCase().includes('pending') || !p.renewalStatus?.toLowerCase().includes('renewed');
-      return isNotRenewed && isValid(dDate) && isBefore(dDate, today);
-    }).length,
-    left: filteredPolicies.filter(p => {
-      const dDate = parseDateString(p.dueDate);
-      const isNotRenewed = p.renewalStatus?.toLowerCase().includes('not') || p.renewalStatus?.toLowerCase().includes('pending') || !p.renewalStatus?.toLowerCase().includes('renewed');
-      return isNotRenewed && isValid(dDate) && !isBefore(dDate, today);
-    }).length,
+    notRenewed: filteredPolicies.filter(p => p.renewalStatus?.toLowerCase().includes('not')).length,
+    totalPremium: totalPremiumValue
   };
 
   const uniquePlanTypes = [...new Set(policies.map(p => p.planType).filter(Boolean))];
@@ -252,7 +275,7 @@ export default function InsuranceReview() {
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#4ade80] text-black text-xs font-black shadow-[0_0_15px_rgba(74,222,128,0.3)] hover:scale-105 transition-all disabled:opacity-50"
           >
             <UploadCloud size={16} />
-            {loading ? 'Processing...' : 'Upload Data File'}
+            {loading ? 'Processing...' : 'Upload Data File (Overwrite)'}
           </button>
         </div>
       </div>
@@ -262,14 +285,13 @@ export default function InsuranceReview() {
         <div className="flex items-center justify-between p-4 rounded-xl border border-white/10 bg-[#050a09] animate-in fade-in slide-in-from-top-4">
           <div className="flex gap-6">
             <span className="text-xs font-bold text-[#4ade80] flex items-center gap-1">🟢 {uploadSummary.new} New Records</span>
-            <span className="text-xs font-bold text-[#fbbf24] flex items-center gap-1">🟡 {uploadSummary.updated} Updated</span>
-            <span className="text-xs font-bold text-[#889995] flex items-center gap-1">⚪ {uploadSummary.skipped} Skipped</span>
+            <span className="text-xs font-bold text-[#fbbf24] flex items-center gap-1">🟡 {uploadSummary.updated} Overwritten</span>
           </div>
           <button onClick={() => setUploadSummary(null)} className="p-1 hover:bg-white/10 text-[#889995] rounded-lg transition-colors"><X size={16}/></button>
         </div>
       )}
 
-      {/* KPI Cards (Now reflect the applied filters) */}
+      {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="p-6 rounded-2xl bg-[#050a09] border border-white/10 relative overflow-hidden group">
           <div className="absolute top-0 right-0 w-24 h-24 bg-[#4ade80]/5 rounded-full blur-2xl group-hover:bg-[#4ade80]/10 transition-colors" />
@@ -278,15 +300,31 @@ export default function InsuranceReview() {
         </div>
         
         <div className="p-6 rounded-2xl bg-[#050a09] border border-white/10 relative overflow-hidden group">
-           <div className="absolute top-0 right-0 w-24 h-24 bg-[#fbbf24]/5 rounded-full blur-2xl group-hover:bg-[#fbbf24]/10 transition-colors" />
-          <div className="flex items-center gap-3 text-[#fbbf24] mb-3"><Clock size={18} /><h3 className="font-bold uppercase tracking-wider text-[10px]">Left (Pending)</h3></div>
-          <p className="text-4xl font-black text-white">{kpis.left}</p>
+          <div className="absolute top-0 right-0 w-24 h-24 bg-[#f87171]/5 rounded-full blur-2xl group-hover:bg-[#f87171]/10 transition-colors" />
+          <div className="flex items-center gap-3 text-[#f87171] mb-3"><AlertCircle size={18} /><h3 className="font-bold uppercase tracking-wider text-[10px]">Not Renewed</h3></div>
+          <p className="text-4xl font-black text-white">{kpis.notRenewed}</p>
         </div>
 
+        {/* Premium Amount Card with Filter */}
         <div className="p-6 rounded-2xl bg-[#050a09] border border-white/10 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-[#f87171]/5 rounded-full blur-2xl group-hover:bg-[#f87171]/10 transition-colors" />
-          <div className="flex items-center gap-3 text-[#f87171] mb-3"><AlertCircle size={18} /><h3 className="font-bold uppercase tracking-wider text-[10px]">Overdue</h3></div>
-          <p className="text-4xl font-black text-white">{kpis.overdue}</p>
+          <div className="absolute top-0 right-0 w-24 h-24 bg-[#60a5fa]/5 rounded-full blur-2xl group-hover:bg-[#60a5fa]/10 transition-colors" />
+          <div className="flex items-start justify-between mb-2 relative z-10">
+            <div className="flex items-center gap-3 text-[#60a5fa] mt-1">
+              <Target size={18} />
+              <h3 className="font-bold uppercase tracking-wider text-[10px]">Premium Amount</h3>
+            </div>
+            <select 
+              value={statsPlanType} 
+              onChange={e => setStatsPlanType(e.target.value)} 
+              className="bg-[#0a1612] text-white text-[10px] font-bold border border-white/10 rounded-lg px-2 py-1 outline-none focus:border-[#60a5fa] cursor-pointer"
+            >
+              <option value="All">All Plans</option>
+              {uniquePlanTypes.map(pt => <option key={pt} value={pt}>{pt}</option>)}
+            </select>
+          </div>
+          <p className="text-3xl font-black text-white mt-1 relative z-10">
+            ₹ {kpis.totalPremium.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+          </p>
         </div>
       </div>
 
@@ -307,7 +345,6 @@ export default function InsuranceReview() {
                 onChange={e => setFilters({...filters, startDate: e.target.value})} 
                 className="bg-transparent border-none text-white text-sm px-2 py-2.5 outline-none focus:text-[#4ade80] transition-colors w-[130px]" 
                 style={{ colorScheme: 'dark' }} 
-                title="Start Date"
               />
               <span className="text-[#889995] text-xs font-bold">TO</span>
               <input 
@@ -316,7 +353,6 @@ export default function InsuranceReview() {
                 onChange={e => setFilters({...filters, endDate: e.target.value})} 
                 className="bg-transparent border-none text-white text-sm px-2 py-2.5 outline-none focus:text-[#4ade80] transition-colors w-[130px]" 
                 style={{ colorScheme: 'dark' }} 
-                title="End Date"
               />
             </div>
             
@@ -324,7 +360,6 @@ export default function InsuranceReview() {
               <option value="All">All Statuses</option>
               <option value="Renewed">Renewed</option>
               <option value="Not Renewed">Not Renewed</option>
-              <option value="Pending">Pending</option>
             </select>
             
             <select value={filters.planType} onChange={e => setFilters({...filters, planType: e.target.value})} className={iStyle}>
@@ -362,8 +397,8 @@ export default function InsuranceReview() {
                 <th className={thStyle}>Policy No.</th>
                 <th className={thStyle}>Policy Holder</th>
                 <th className={thStyle}>Plan Type</th>
-                <th className={thStyle}>Due Date</th>
-                <th className={thStyle}>Due Premium</th>
+                <th className={thStyle}>Due Date (DD/MM/YYYY)</th>
+                <th className={thStyle}>Premium Amount</th>
                 <th className={thStyle}>ECS/Non ECS</th>
                 <th className={thStyle}>Status</th>
                 <th className={`${thStyle} text-right`}>Actions</th>
@@ -382,7 +417,7 @@ export default function InsuranceReview() {
                     <td className={`${tdStyle} text-[#c8d4d0]`}>{row.policyHolder}</td>
                     <td className={`${tdStyle} text-[#889995]`}>{row.planType}</td>
                     
-                    {/* Inline Editable Date */}
+                    {/* Inline Editable Date (DD/MM/YYYY) */}
                     <td className={tdStyle}>
                       <div className="flex items-center gap-2 group-hover:bg-black/40 rounded px-2 -ml-2 transition-colors border border-transparent group-hover:border-white/5">
                         <input type="text" value={row.dueDate} onChange={(e) => handleInlineEdit(row.policyNo, 'dueDate', e.target.value)} className="bg-transparent border-none outline-none w-24 py-1 text-white placeholder-[#889995]" />
@@ -390,10 +425,10 @@ export default function InsuranceReview() {
                       </div>
                     </td>
                     
-                    {/* Inline Editable Premium */}
+                    {/* Inline Editable Premium Amount */}
                     <td className={tdStyle}>
                        <div className="flex items-center gap-2 group-hover:bg-black/40 rounded px-2 -ml-2 transition-colors border border-transparent group-hover:border-white/5">
-                        <input type="text" value={row.duePremium} onChange={(e) => handleInlineEdit(row.policyNo, 'duePremium', e.target.value)} className="bg-transparent border-none outline-none w-20 py-1 text-white placeholder-[#889995]" />
+                        <input type="text" value={row.premiumAmount} onChange={(e) => handleInlineEdit(row.policyNo, 'premiumAmount', e.target.value)} className="bg-transparent border-none outline-none w-24 py-1 text-white placeholder-[#889995]" />
                         <Edit2 size={12} className="opacity-0 group-hover:opacity-50 text-[#889995]" />
                       </div>
                     </td>
@@ -408,13 +443,10 @@ export default function InsuranceReview() {
                         className={`text-[10px] uppercase tracking-wider font-bold px-3 py-1.5 rounded-lg outline-none cursor-pointer appearance-none text-center min-w-[110px] border transition-colors
                           ${row.renewalStatus?.toLowerCase().includes('renewed') && !row.renewalStatus?.toLowerCase().includes('not') 
                             ? 'bg-[#4ade80]/10 text-[#4ade80] border-[#4ade80]/20 hover:bg-[#4ade80]/20' 
-                            : row.renewalStatus?.toLowerCase().includes('not') 
-                              ? 'bg-[#f87171]/10 text-[#f87171] border-[#f87171]/20 hover:bg-[#f87171]/20' 
-                              : 'bg-[#fbbf24]/10 text-[#fbbf24] border-[#fbbf24]/20 hover:bg-[#fbbf24]/20'}`}
+                            : 'bg-[#f87171]/10 text-[#f87171] border-[#f87171]/20 hover:bg-[#f87171]/20'}`}
                       >
                         <option value="Renewed" className="bg-[#0a1612] text-white">Renewed</option>
                         <option value="Not Renewed" className="bg-[#0a1612] text-white">Not Renewed</option>
-                        <option value="Pending" className="bg-[#0a1612] text-white">Pending</option>
                       </select>
                     </td>
                     

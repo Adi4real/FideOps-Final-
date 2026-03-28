@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
-import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check, ListTodo, Info, Save, X, Target } from "lucide-react";
+import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, Wallet, Calendar, ChevronDown, ChevronUp, Filter, XCircle, CheckSquare, Check, ListTodo, Info, Save, X, Target, Shield } from "lucide-react";
 
 import { db } from "../firebase"; 
-import { collection, query, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, where } from "firebase/firestore";
+import { collection, query, orderBy, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, writeBatch } from "firebase/firestore";
 
 import ClientImport from "@/components/clients/ClientImport.jsx";
 import ClientForm from "@/components/clients/ClientForm.jsx";
@@ -119,6 +119,8 @@ function parseTransactionItems(rawString) {
 export default function Clients() {
   const [clients, setClients] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [allPolicies, setAllPolicies] = useState([]); // Global store for all insurance policies
+  
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
   const [editClient, setEditClient] = useState(null);
@@ -142,6 +144,9 @@ export default function Clients() {
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
 
+  // --- INSURANCE INTEGRATION STATES ---
+  const [selectedSuggestions, setSelectedSuggestions] = useState(new Set()); // For bulk linking
+
   // --- TASK EDITING STATE ---
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [editTaskForm, setEditTaskForm] = useState({});
@@ -153,7 +158,7 @@ export default function Clients() {
   // --- INLINE EDIT STATE FOR INFO/ACTION ---
   const [inlineEdit, setInlineEdit] = useState({ field: null, value: "", loading: false });
 
-  // REAL-TIME ONSNAPSHOT LISTENERS
+  // REAL-TIME ONSNAPSHOT LISTENERS (Clients, Tasks, and Policies)
   useEffect(() => {
     setLoading(true);
     const unsubClients = onSnapshot(query(collection(db, "clients"), orderBy("client_name")), (snap) => {
@@ -167,8 +172,41 @@ export default function Clients() {
       setTasks(snap.docs.map(d => ({id: d.id, ...d.data()})));
     });
 
-    return () => { unsubClients(); unsubTasks(); };
+    const unsubPolicies = onSnapshot(collection(db, "insurance_policies"), (snap) => {
+      setAllPolicies(snap.docs.map(d => ({ docId: d.id, ...d.data() })));
+    });
+
+    return () => { unsubClients(); unsubTasks(); unsubPolicies(); };
   }, []);
+
+  // Clear selected policy suggestions when switching clients
+  useEffect(() => {
+    setSelectedSuggestions(new Set());
+  }, [selected]);
+
+  // --- FUZZY MATCHING FOR INSURANCE ---
+  const clientPolicies = selected ? allPolicies.filter(p => p.linkedClientId === selected.id) : [];
+  
+  const suggestedPolicies = selected ? allPolicies.filter(p => {
+    // 1. Skip if already linked to ANY client
+    if (p.linkedClientId) return false;
+
+    const cName = String(selected.client_name || "").toLowerCase().trim();
+    const pName = String(p.policyHolder || "").toLowerCase().trim();
+
+    if (!cName || !pName) return false;
+    
+    // 2. Exact Match
+    if (cName === pName) return true;
+
+    // 3. Fuzzy Match (Checking if significant name parts overlap)
+    // Example: "Rajesh Mehta" vs "Rajesh M" will match because "rajesh" is in both.
+    const cParts = cName.split(/[\s,.-]+/).filter(x => x.length > 2); // Ignore short words like 'M'
+    const pParts = pName.split(/[\s,.-]+/).filter(x => x.length > 2);
+
+    return cParts.some(cp => pParts.includes(cp));
+  }) : [];
+
 
   const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
   const uniqueHoldings = [...new Set(clients.map(c => c.holding_nature).filter(v => v && v !== "-"))].sort();
@@ -269,6 +307,60 @@ export default function Clients() {
     }
   };
 
+  // --- INSURANCE ACTIONS ---
+  const handleLinkSinglePolicy = async (policyDocId) => {
+    try {
+      await updateDoc(doc(db, "insurance_policies", policyDocId), {
+        linkedClientId: selected.id,
+        linkedClientName: selected.client_name
+      });
+      // Remove from selected set just in case
+      const newSet = new Set(selectedSuggestions);
+      newSet.delete(policyDocId);
+      setSelectedSuggestions(newSet);
+    } catch (err) {
+      console.error("Error linking policy:", err);
+      alert("Failed to link policy.");
+    }
+  };
+
+  const handleBulkLinkPolicies = async () => {
+    if (selectedSuggestions.size === 0) return;
+    try {
+      const batch = writeBatch(db);
+      selectedSuggestions.forEach(docId => {
+        batch.update(doc(db, "insurance_policies", docId), {
+          linkedClientId: selected.id,
+          linkedClientName: selected.client_name
+        });
+      });
+      await batch.commit();
+      setSelectedSuggestions(new Set());
+    } catch (err) {
+      console.error("Error bulk linking policies:", err);
+      alert("Failed to link policies.");
+    }
+  };
+
+  const handleUnlinkPolicy = async (policyDocId) => {
+    if (!window.confirm("Are you sure you want to unlink this policy from this client?")) return;
+    try {
+      await updateDoc(doc(db, "insurance_policies", policyDocId), {
+        linkedClientId: null,
+        linkedClientName: null
+      });
+    } catch (err) {
+      console.error("Error unlinking policy:", err);
+    }
+  };
+
+  const toggleSuggestionSelection = (docId) => {
+    const newSet = new Set(selectedSuggestions);
+    if (newSet.has(docId)) newSet.delete(docId); else newSet.add(docId);
+    setSelectedSuggestions(newSet);
+  };
+
+  // --- TASK & PORTFOLIO ACTIONS ---
   const handleTaskStatusUpdate = async (taskId, newStatus, fullTaskData) => {
     try {
       const update = { status: newStatus };
@@ -286,7 +378,6 @@ export default function Clients() {
           let currentPortfolio = targetClient[targetKey] || [];
           let modified = false;
 
-          // 1. Handle Cancellations
           if (fullTaskData.action === "SIP Cancellation") {
             const cancelledSchemes = parseTransactionItems(fullTaskData.product_name).map(i => i.productName.toLowerCase().trim());
             if (cancelledSchemes.length > 0) {
@@ -300,7 +391,6 @@ export default function Clients() {
               }
             }
           } 
-          // 2. Handle additions from SIPs AND Lumpsums 
           else if (SIP_ADD_ACTIONS.includes(fullTaskData.action)) { 
             const newItems = parseTransactionItems(fullTaskData.product_name).filter(i => i.productName && i.amount);
             if (newItems.length > 0) {
@@ -388,7 +478,6 @@ export default function Clients() {
       const updatedPortfolio = [...(selected[targetKey] || [])];
       const finalFormToSave = { ...invForm };
       
-      // Preserve the item's position in the raw database array
       const targetIndex = finalFormToSave.originalIndex;
       delete finalFormToSave.originalIndex;
       updatedPortfolio[targetIndex] = finalFormToSave;
@@ -444,14 +533,12 @@ export default function Clients() {
           <p className="text-sm font-semibold truncate" style={{ color: isSelectedForDeletion ? "#f87171" : "var(--text-main)" }}>
             {isSubItem ? (c.tax_status && c.tax_status !== "-" ? c.tax_status : "Standard Profile") : c.client_name}
             
-            {/* Display Relations List */}
             {c.relations && c.relations.map((rel, idx) => (
               <span key={idx} className="text-[10px] text-yellow-400 font-bold ml-2 bg-yellow-400/10 px-1.5 py-0.5 rounded border border-yellow-400/20 truncate max-w-[120px] inline-block align-bottom">
                 {rel.type} of {rel.related_to_name}
               </span>
             ))}
             
-            {/* Display Referred By Badge */}
             {c.referred_by && c.referred_by !== "-" && (
               <span className="text-[10px] text-blue-400 font-bold ml-2 bg-blue-400/10 px-1.5 py-0.5 rounded border border-blue-400/20 truncate max-w-[120px] inline-block align-bottom">
                 Ref. by {c.referred_by}
@@ -471,7 +558,6 @@ export default function Clients() {
 
   const inputStyle = { padding: "6px 10px", borderRadius: 6, background: "#0a1612", border: "1px solid rgba(255,255,255,0.15)", color: "#c8d4d0", fontSize: 12, width: "100%" };
 
-  // Generate filtered portfolio items (SIPs ONLY) mapping to their true index for safe deletion/edits
   const sipInvestmentsWithIndex = selected ? (selected.investments || [])
     .map((inv, idx) => ({ ...inv, originalIndex: idx }))
     .filter(inv => inv.type !== "LS" && inv.frequency_type !== "One-time") : [];
@@ -682,7 +768,6 @@ export default function Clients() {
                       </h2>
                       <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>{selected.client_code}</p>
                       
-                      {/* RELATIONS & REFERRALS DISPLAY */}
                       {(selected.relations?.length > 0 || (selected.referred_by && selected.referred_by !== "-")) && (
                         <div className="flex gap-2 mt-2 flex-wrap">
                           {selected.relations?.map((rel, idx) => (
@@ -721,7 +806,6 @@ export default function Clients() {
                   ))}
                 </div>
 
-                {/* INLINE EDIT: CLIENT INFORMATION */}
                 <div className="mt-4 p-3 rounded-xl text-sm relative group" style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
                   <div className="flex justify-between items-center mb-1">
                     <span className="font-bold uppercase text-[10px] text-[#889995]">Client Information</span>
@@ -749,7 +833,6 @@ export default function Clients() {
                   )}
                 </div>
 
-                {/* INLINE EDIT: ACTION */}
                 <div className="mt-3 p-3 rounded-xl text-sm relative group" style={{ background: "rgba(0,130,84,0.05)", border: "1px solid rgba(0,130,84,0.3)" }}>
                   <div className="flex justify-between items-center mb-1">
                     <span className="font-bold uppercase text-[10px] text-brand-green">Action Items / Next Steps</span>
@@ -782,7 +865,7 @@ export default function Clients() {
               {/* TABS CONTAINER */}
               <div className="rounded-2xl p-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)", minHeight: "400px" }}>
                 
-                <div className="flex gap-6 border-b border-white/10 mb-6">
+                <div className="flex gap-6 border-b border-white/10 mb-6 overflow-x-auto custom-scrollbar whitespace-nowrap pb-1">
                   <button onClick={() => setActiveTab('timeline')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'timeline' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}>
                     <ListTodo className="w-4 h-4" />
                     Activity Timeline ({clientTasksRaw.length})
@@ -794,6 +877,10 @@ export default function Clients() {
                   <button onClick={() => setActiveTab('goals')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'goals' ? 'text-brand-green border-b-2 border-brand-green' : 'text-[#889995] hover:text-white'}`}>
                     <Target className="w-4 h-4" />
                     Financial Goals ({selected.financial_goals?.length || 0})
+                  </button>
+                  <button onClick={() => setActiveTab('insurance')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'insurance' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-[#889995] hover:text-white'}`}>
+                    <Shield className="w-4 h-4" />
+                    Insurance ({clientPolicies.length})
                   </button>
                 </div>
 
@@ -879,7 +966,6 @@ export default function Clients() {
                                 </div>
                               </div>
 
-                              {/* VIEW MODE */}
                               {isExpanded && !isEditingThis && (
                                 <div className="mt-3 p-4 border-t border-white/5 bg-black/40 rounded-xl animate-in slide-in-from-top-2 cursor-default" onClick={e => e.stopPropagation()}>
                                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
@@ -913,7 +999,6 @@ export default function Clients() {
                                 </div>
                               )}
 
-                              {/* FULL EDIT MODE */}
                               {isExpanded && isEditingThis && (
                                 <div className="mt-3 p-4 border-t border-white/5 bg-black/60 rounded-xl cursor-default animate-in slide-in-from-top-2" onClick={e => e.stopPropagation()}>
                                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-4">
@@ -948,7 +1033,6 @@ export default function Clients() {
                                     </div>
                                   </div>
 
-                                  {/* PRODUCT BUILDER */}
                                   <div className="mb-4">
                                     <label className="text-[9px] uppercase font-bold text-[#889995] mb-2 block flex items-center gap-1"><Info size={10} /> Product Details</label>
                                     {isTx ? (
@@ -1190,6 +1274,94 @@ export default function Clients() {
                     )}
                   </div>
                 )}
+
+                {/* TAB 4: INSURANCE (LINKED POLICIES) */}
+                {activeTab === "insurance" && (
+                  <div className="animate-in fade-in duration-200">
+                    
+                    {/* Suggestion Banner for Unlinked Policies that match this client's name */}
+                    {suggestedPolicies.length > 0 && (
+                      <div className="mb-6 p-4 rounded-xl border border-blue-500/30 bg-blue-500/10">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-3 gap-3">
+                          <h4 className="text-sm font-bold text-blue-400 flex items-center gap-2">
+                            <Info size={16} /> Found {suggestedPolicies.length} Matching Unlinked Policies
+                          </h4>
+                          {selectedSuggestions.size > 0 && (
+                            <button 
+                              onClick={handleBulkLinkPolicies} 
+                              className="text-xs px-3 py-1.5 bg-blue-500 text-white rounded hover:bg-blue-600 font-bold transition-all shadow-lg shadow-blue-500/20 whitespace-nowrap"
+                            >
+                              Link {selectedSuggestions.size} Selected
+                            </button>
+                          )}
+                        </div>
+                        <p className="text-xs text-blue-300/80 mb-4">We found existing records in the master database that may belong to <strong>"{selected.client_name}"</strong>. Select and link them to attach them to this profile.</p>
+                        
+                        <div className="space-y-2">
+                          {suggestedPolicies.map(p => (
+                            <div key={p.docId} className="flex items-center gap-3 bg-black/40 p-3 rounded-lg border border-blue-500/20">
+                              <input 
+                                type="checkbox" 
+                                className="w-4 h-4 rounded cursor-pointer accent-blue-500"
+                                checked={selectedSuggestions.has(p.docId)}
+                                onChange={() => toggleSuggestionSelection(p.docId)}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-bold text-white flex items-center gap-2 truncate">
+                                  {p.policyHolder} <span className="text-[10px] font-medium text-blue-300/70 truncate">- {p.plan}</span>
+                                </p>
+                                <p className="text-[10px] font-mono text-blue-400 mt-1">
+                                  Policy: {p.policyNo} | Premium: ₹{Number(p.premiumAmount || 0).toLocaleString('en-IN')}
+                                </p>
+                              </div>
+                              <button 
+                                onClick={() => handleLinkSinglePolicy(p.docId)} 
+                                className="text-xs px-3 py-1.5 bg-blue-500/20 text-blue-400 rounded border border-blue-500/30 hover:bg-blue-500 hover:text-white font-bold transition-all"
+                              >
+                                Link
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Linked Policies List */}
+                    {clientPolicies.length === 0 ? (
+                      <div className="text-center py-12 border border-dashed border-white/10 rounded-xl bg-black/20">
+                        <p className="text-sm text-[#889995] mb-4">No insurance policies linked to this client.</p>
+                        <p className="text-xs text-white/50">Upload records in the <strong>Insurance Review</strong> tab to see them here.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
+                        {clientPolicies.map(p => (
+                          <div key={p.docId} className="p-4 rounded-xl border border-white/10 bg-white/5 flex justify-between items-center group hover:bg-white/10 transition-colors">
+                            <div>
+                              <p className="text-[10px] uppercase font-bold text-blue-400 tracking-wider mb-1 flex items-center gap-1">
+                                {p.planType}
+                                <span className="text-white/30">•</span>
+                                <span className={p.renewalStatus === 'Renewed' ? 'text-[#4ade80]' : 'text-yellow-400'}>{p.renewalStatus}</span>
+                              </p>
+                              <p className="text-sm font-bold text-white">{p.plan}</p>
+                              <p className="text-[10px] text-[#889995] mt-1 font-mono tracking-wider">Policy: {p.policyNo}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[10px] uppercase font-bold text-[#889995] tracking-wider mb-1">Premium Due: {p.dueDate}</p>
+                              <p className="text-sm font-black text-blue-400">₹{Number(p.premiumAmount || 0).toLocaleString('en-IN')}</p>
+                              <button 
+                                onClick={() => handleUnlinkPolicy(p.docId)} 
+                                className="text-[10px] text-red-400 mt-1.5 opacity-0 group-hover:opacity-100 hover:underline transition-opacity"
+                              >
+                                Unlink Record
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
               </div>
             </>
           )}

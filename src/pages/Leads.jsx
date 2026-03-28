@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, CalendarPlus } from "lucide-react";
+import { Search, Plus, Upload, ChevronRight, Pencil, Trash2, RefreshCw, CalendarPlus, UserCheck } from "lucide-react";
 
 // Firebase Imports
 import { db } from "../firebase"; 
@@ -12,8 +12,6 @@ import {
   addDoc, 
   updateDoc, 
   deleteDoc, 
-  getDocs, 
-  where,
   serverTimestamp 
 } from "firebase/firestore";
 
@@ -34,7 +32,7 @@ function makeGCalLeadLink(lead) {
 
 const LEAD_CATEGORIES = ["Normal Lead", "Strong Lead"];
 
-// Updated Action Stages (Reordered, Physical KYC removed, Transaction to be initiated added)
+// Updated Action Stages
 const ACTION_STAGES = [
   "Meet Urgent", 
   "Upcoming Meeting", 
@@ -86,6 +84,7 @@ export default function LeadClients() {
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState("Active"); // <-- New Status Filter
   const [filterCat, setFilterCat] = useState("all");
   const [filterStage, setFilterStage] = useState("all");
   const [showForm, setShowForm] = useState(false);
@@ -110,9 +109,18 @@ export default function LeadClients() {
     return () => unsubscribe();
   }, []);
 
-  const active = leads.filter(l => l.status !== "Converted");
+  const totalActive = leads.filter(l => l.status !== "Converted").length;
+  const totalConverted = leads.filter(l => l.status === "Converted").length;
 
-  let filtered = active;
+  // Apply Filters
+  let filtered = leads;
+  
+  if (filterStatus === "Active") {
+    filtered = filtered.filter(l => l.status !== "Converted");
+  } else if (filterStatus === "Converted") {
+    filtered = filtered.filter(l => l.status === "Converted");
+  }
+
   if (search) {
     const q = search.toLowerCase();
     filtered = filtered.filter(l =>
@@ -160,13 +168,11 @@ export default function LeadClients() {
       const leadRef = doc(db, "leads", lead.id);
 
       // --- LOGIC 1: Transaction to be initiated ---
-      // Adds the client to the master but keeps the lead visible on this screen
       if (newStage === "Transaction to be initiated") {
         setConverting(lead.id);
         
         let clientId = lead.converted_client_id;
 
-        // Check if we already created the client earlier to avoid duplicates
         if (!clientId) {
           const clientCode = lead.lead_code ? lead.lead_code.replace("LD-", "FW-C-") : `FW-C-${Date.now()}`;
           const newClient = await addDoc(collection(db, "clients"), {
@@ -186,7 +192,6 @@ export default function LeadClients() {
           clientId = newClient.id;
         }
 
-        // Update lead stage but keep status "Active"
         await updateDoc(leadRef, {
           action_stage: newStage,
           converted_client_id: clientId || null
@@ -195,13 +200,11 @@ export default function LeadClients() {
         setConverting(null);
 
       // --- LOGIC 2: Onboarding Completed ---
-      // Marks the lead as converted, removing it from this screen completely
       } else if (newStage === "Onboarding Completed") {
         setConverting(lead.id);
         
         let clientId = lead.converted_client_id;
 
-        // If they skipped the Transaction phase and went straight to Onboarding Completed
         if (!clientId) {
           const clientCode = lead.lead_code ? lead.lead_code.replace("LD-", "FW-C-") : `FW-C-${Date.now()}`;
           const newClient = await addDoc(collection(db, "clients"), {
@@ -221,7 +224,6 @@ export default function LeadClients() {
           clientId = newClient.id;
         }
 
-        // Remove from leads table view by changing status to "Converted"
         await updateDoc(leadRef, {
           action_stage: newStage,
           status: "Converted",
@@ -259,7 +261,7 @@ export default function LeadClients() {
             </span>
           </div>
           <h1 className="text-2xl font-bold" style={{ color: "#c8d4d0" }}>Lead Clients</h1>
-          <p className="text-sm mt-1" style={{ color: "#889995" }}>{active.length} active prospects</p>
+          <p className="text-sm mt-1" style={{ color: "#889995" }}>{totalActive} active prospects</p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <button onClick={() => {}} style={{ padding: "8px 10px", borderRadius: 10, background: "var(--glass)", border: "1px solid var(--border)", color: "#889995", cursor: "pointer" }}>
@@ -288,6 +290,14 @@ export default function LeadClients() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
+        
+        {/* NEW Lead Status Filter */}
+        <select style={selectStyle} value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+          <option value="Active">Active Leads</option>
+          <option value="Converted">Converted Clients</option>
+          <option value="All">All Leads</option>
+        </select>
+
         <select style={selectStyle} value={filterCat} onChange={e => setFilterCat(e.target.value)}>
           <option value="all">All Categories</option>
           {LEAD_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
@@ -314,12 +324,14 @@ export default function LeadClients() {
                 <tr><td colSpan={8} style={{ textAlign: "center", padding: 48, color: "#889995" }}>Loading leads...</td></tr>
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={8} style={{ textAlign: "center", padding: 48, color: "#889995" }}>
-                  {search || filterCat !== "all" || filterStage !== "all" ? "No leads match your filters." : "No leads yet. Add one or import from Excel."}
+                  {search || filterCat !== "all" || filterStage !== "all" || filterStatus !== "Active" ? "No leads match your filters." : "No leads yet. Add one or import from Excel."}
                 </td></tr>
               ) : filtered.map((lead, i) => {
                 const cat = categoryColor[lead.lead_category] || { bg: "rgba(255,255,255,0.06)", text: "#889995" };
                 const stg = stageColor(lead.action_stage);
                 const isConverting = converting === lead.id;
+                const isConverted = lead.status === "Converted";
+
                 return (
                   <tr key={lead.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)" }}>
                     <td style={{ padding: "14px 12px", fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: "#008254" }}>{lead.lead_code || "—"}</td>
@@ -328,7 +340,7 @@ export default function LeadClients() {
                         <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(0,130,84,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 13, color: "#4ade80", flexShrink: 0 }}>
                           {lead.lead_name?.[0]?.toUpperCase() || "?"}
                         </div>
-                        <span style={{ fontWeight: 600, color: "#c8d4d0" }}>{lead.lead_name}</span>
+                        <span style={{ fontWeight: 600, color: "#c8d4d0", textDecoration: isConverted ? "line-through" : "none" }}>{lead.lead_name}</span>
                       </div>
                     </td>
                     <td style={{ padding: "14px 12px", color: "#889995" }}>{lead.rm_assigned || "—"}</td>
@@ -340,15 +352,21 @@ export default function LeadClients() {
                       ) : "—"}
                     </td>
                     <td style={{ padding: "14px 12px" }}>
-                      <select
-                        value={lead.action_stage || ""}
-                        onChange={e => handleStageChange(lead, e.target.value)}
-                        disabled={isConverting}
-                        style={{ padding: "5px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, background: stg.bg, border: "1px solid rgba(255,255,255,0.08)", color: stg.text, cursor: "pointer" }}
-                      >
-                        <option value="">Select Stage</option>
-                        {ACTION_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
+                      {isConverted ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, background: "rgba(74,222,128,0.15)", border: "1px solid rgba(74,222,128,0.3)", color: "#4ade80" }}>
+                          <UserCheck className="w-3.5 h-3.5" /> Converted to Client
+                        </span>
+                      ) : (
+                        <select
+                          value={lead.action_stage || ""}
+                          onChange={e => handleStageChange(lead, e.target.value)}
+                          disabled={isConverting}
+                          style={{ padding: "5px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, background: stg.bg, border: "1px solid rgba(255,255,255,0.08)", color: stg.text, cursor: "pointer" }}
+                        >
+                          <option value="">Select Stage</option>
+                          {ACTION_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      )}
                       {isConverting && <span style={{ fontSize: 10, color: "#4ade80", marginLeft: 6 }}>Processing...</span>}
                     </td>
                     <td style={{ padding: "14px 12px" }}>
@@ -372,7 +390,7 @@ export default function LeadClients() {
         </div>
         {filtered.length > 0 && (
           <div style={{ padding: "10px 16px", borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 11, color: "#889995" }}>
-            Showing {filtered.length} of {active.length} active leads · {leads.filter(l => l.status === "Converted").length} converted to clients
+            Showing {filtered.length} leads · {totalActive} Active · {totalConverted} Converted
           </div>
         )}
       </div>

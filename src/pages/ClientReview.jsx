@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
-import { Search, ChevronRight, ChevronDown, ChevronUp, Save, Plus, X, Clock, FileText, CheckCircle2, Filter, CalendarCheck, AlertTriangle, Star, Edit3, Download, Image as ImageIcon, Target, Shield, HeartPulse, PiggyBank, AlertCircle } from "lucide-react";
+import { Search, ChevronRight, ChevronDown, ChevronUp, Save, Plus, X, Clock, FileText, CheckCircle2, Filter, CalendarCheck, AlertTriangle, Star, Edit3, Download, Image as ImageIcon, Target, Shield, HeartPulse, PiggyBank, AlertCircle, XCircle } from "lucide-react";
 import { format, parseISO, addMonths, addYears, isBefore, isSameMonth, endOfMonth, startOfDay } from "date-fns";
 import html2canvas from "html2canvas";
 
@@ -32,12 +32,10 @@ const emptyPlan = {
   }
 };
 
-// --- GLOBAL MEMORY CACHE (0 READS ON TAB SWITCH) ---
 let cachedClients = [];
 let isListeningClients = false;
 let clientSubs = new Set();
 
-// --- DATE FORMAT HELPERS ---
 const toInputDate = (dateStr) => {
   if (!dateStr || dateStr === "-") return "";
   try {
@@ -149,6 +147,9 @@ export default function ClientReview() {
       else {
         matchesStatus = c.next_review_date.startsWith(filters.targetMonth);
       }
+    } else if (filters.status === "completed") {
+      // NEW: Filter explicitly for completed reviews in the target month based on notes history
+      matchesStatus = (c.review_notes || []).some(n => n.date.startsWith(filters.targetMonth) && n.text.includes("Review Completed"));
     }
     
     return matchesSearch && matchesRm && matchesCycle && matchesStatus;
@@ -161,7 +162,7 @@ export default function ClientReview() {
     return acc;
   }, {})).sort((a, b) => a.client_name.localeCompare(b.client_name));
 
-  const activeFilterCount = Object.values(filters).filter(v => v !== "" && v !== "all").length;
+  const activeFilterCount = Object.values(filters).filter(v => v !== "" && v !== "all" && v !== "due").length + (filters.status !== "all" && filters.status !== "due" ? 1 : 0);
 
   const updateClientMeta = async (field, value) => {
     if (!selected) return;
@@ -275,6 +276,55 @@ export default function ClientReview() {
   const updateMfAction = (index, field, value) => { setPlanDraft(p => { const updated = [...p.mf_actions]; updated[index][field] = value; return { ...p, mf_actions: updated }; }); };
   const removeMfAction = (index) => { setPlanDraft(p => ({ ...p, mf_actions: p.mf_actions.filter((_, i) => i !== index) })); };
 
+  // --- UI RENDER HELPERS ---
+  const renderProfileButton = (c, isSubItem) => {
+    const isActive = selected?.id === c.id;
+    let dueColor = "var(--text-muted)";
+    let dueText = "Unscheduled";
+
+    if (c.next_review_date) {
+      const revDate = parseISO(c.next_review_date);
+      dueText = format(revDate, "MMM yyyy");
+      if (filters.status === "completed") {
+        dueColor = "#4ade80"; // Completed Green
+      } else if (filters.status === "specific_month" || filters.status === "current_month") {
+        dueColor = "#60a5fa"; // Blue
+      } else if (isBefore(revDate, startOfDay(new Date()))) {
+        dueColor = "#f87171"; // Overdue Red
+      } else if (isSameMonth(revDate, new Date())) {
+        dueColor = "#fbbf24"; // Due Yellow
+      }
+    } else {
+      dueColor = "#f87171"; // Unscheduled Red
+    }
+
+    return (
+      <button
+        key={c.id}
+        onClick={() => { setSelected(c); setExpandedGroup(null); }}
+        className={`w-full text-left py-3 flex items-center gap-3 transition-colors ${isSubItem ? 'pl-10 pr-4 border-l-2 border-brand-green/40 hover:bg-white/5' : 'px-4 hover:bg-white/5 border-b border-[var(--border)]'}`}
+        style={{ background: isActive ? "rgba(0, 130, 84, 0.12)" : "transparent" }}
+      >
+        {!isSubItem && (
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-sm"
+            style={{ background: isActive ? "var(--brand-green)" : "rgba(255,255,255,0.07)", color: isActive ? "white" : "var(--brand-green)" }}>
+            {c.client_name?.[0]?.toUpperCase() || "?"}
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-main)" }}>
+            {isSubItem ? (c.tax_status && c.tax_status !== "-" ? c.tax_status : "Standard Profile") : c.client_name}
+          </p>
+          <div className="flex items-center gap-1 mt-0.5 text-[10px] font-bold" style={{ color: dueColor }}>
+            <Clock size={10} />
+            <span>{dueText}</span>
+          </div>
+        </div>
+        <ChevronRight className="w-4 h-4 flex-shrink-0" style={{ color: "var(--text-muted)" }} />
+      </button>
+    );
+  };
+
   const iStyle = { padding: "8px 12px", borderRadius: 8, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.1)", color: "#c8d4d0", fontSize: 13, width: "100%", outline: "none" };
   const tInputStyle = { width: "100%", background: "rgba(255,255,255,0.05)", border: "none", borderRadius: "4px", padding: "6px 8px", color: "#fff", outline: "none", fontSize: "13px" };
   const thStyle = { padding: "16px", textAlign: "left", fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 1, color: "#889995", borderBottom: "1px solid rgba(255,255,255,0.05)" };
@@ -299,12 +349,13 @@ export default function ClientReview() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Left Sidebar (List & Filters) */}
         <div className="lg:col-span-1 rounded-2xl flex flex-col sticky top-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)", height: "calc(100vh - 120px)" }}>
-          <div className="p-5 flex-shrink-0 z-20 bg-[#0a1612] rounded-t-2xl" style={{ borderBottom: "1px solid var(--border)" }}>
-            <div className="flex gap-3 relative">
+          <div className="p-4 flex-shrink-0 z-20 bg-[#0a1612] rounded-t-2xl" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div className="flex gap-2 relative">
               <div className="relative flex-1">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#889995]" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: "var(--text-muted)" }} />
                 <input 
-                  className="w-full pl-12 pr-4 py-3.5 rounded-xl text-base bg-[#050a09] border border-white/10 text-white focus:border-[#4ade80] outline-none shadow-inner transition-all placeholder-[#889995]" 
+                  className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm" 
+                  style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text-main)" }}
                   placeholder="Search clients..." 
                   value={search} 
                   onChange={e => setSearch(e.target.value)} 
@@ -312,37 +363,46 @@ export default function ClientReview() {
               </div>
               <button 
                 onClick={() => setShowFilters(!showFilters)} 
-                className="px-4 rounded-xl border flex items-center justify-center transition-all hover:bg-white/5 relative shadow-sm" 
-                style={{ background: activeFilterCount > 0 ? "rgba(0,130,84,0.15)" : "#050a09", borderColor: activeFilterCount > 0 ? "#008254" : "var(--border)", color: activeFilterCount > 0 ? "#4ade80" : "#889995" }}
+                className="relative px-3 rounded-xl border flex items-center justify-center transition-all hover:bg-white/5" 
+                style={{ background: activeFilterCount > 0 ? "rgba(0,130,84,0.15)" : "var(--input-bg)", borderColor: activeFilterCount > 0 ? "var(--brand-green)" : "var(--border)", color: activeFilterCount > 0 ? "var(--brand-green)" : "var(--text-muted)" }}
               >
-                <Filter className="w-5 h-5" />
+                <Filter className="w-4 h-4" />
+                {activeFilterCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-brand-green text-white flex items-center justify-center text-[9px] font-bold shadow-sm">{activeFilterCount}</span>
+                )}
               </button>
 
               {showFilters && (
-                <div className="absolute top-[110%] right-0 w-64 p-4 rounded-2xl shadow-2xl border animate-in slide-in-from-top-2" style={{ background: "#0a1612", borderColor: "var(--border)", zIndex: 100 }}>
-                  <div className="flex items-center justify-between mb-4 border-b border-white/10 pb-3">
+                <div className="absolute top-[115%] right-0 w-64 p-4 rounded-2xl shadow-2xl border animate-in slide-in-from-top-2" style={{ background: "#0a1612", borderColor: "var(--border)", zIndex: 100 }}>
+                  <div className="flex items-center justify-between mb-3 border-b border-white/10 pb-2">
                     <p className="text-xs font-bold uppercase tracking-wider text-white">Review Filters</p>
+                    {activeFilterCount > 0 && (
+                      <button onClick={() => setFilters({rm: "", cycle: "", status: "all", targetMonth: format(new Date(), "yyyy-MM")})} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold">
+                        <XCircle className="w-3 h-3" /> Clear
+                      </button>
+                    )}
                   </div>
-                  <div className="space-y-5">
+                  <div className="space-y-4">
                     <div>
-                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-2 block">Review Status</label>
-                      <div className="flex flex-col gap-1.5 bg-[#050a09] border border-white/10 rounded-xl p-1.5">
-                        <button onClick={() => setFilters({...filters, status: "due"})} className={`w-full py-2.5 text-xs font-bold rounded-lg transition-all ${filters.status === 'due' ? 'bg-[#fbbf24]/20 text-[#fbbf24]' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>Due / Overdue</button>
-                        <button onClick={() => setFilters({...filters, status: "current_month"})} className={`w-full py-2.5 text-xs font-bold rounded-lg transition-all ${filters.status === 'current_month' ? 'bg-[#60a5fa]/20 text-[#60a5fa]' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>This Month</button>
-                        <button onClick={() => setFilters({...filters, status: "unscheduled"})} className={`w-full py-2.5 text-xs font-bold rounded-lg transition-all ${filters.status === 'unscheduled' ? 'bg-[#f87171]/20 text-[#f87171]' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>Unscheduled Only</button>
-                        <button onClick={() => setFilters({...filters, status: "all"})} className={`w-full py-2.5 text-xs font-bold rounded-lg transition-all ${filters.status === 'all' ? 'bg-white/10 text-white' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>All Clients</button>
+                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">Review Status</label>
+                      <div className="flex flex-col gap-1.5 bg-black border border-white/10 rounded-xl p-1.5">
+                        <button onClick={() => setFilters({...filters, status: "due"})} className={`w-full py-2 text-xs font-bold rounded-lg transition-all ${filters.status === 'due' ? 'bg-[#fbbf24]/20 text-[#fbbf24]' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>Due / Overdue</button>
+                        <button onClick={() => setFilters({...filters, status: "current_month"})} className={`w-full py-2 text-xs font-bold rounded-lg transition-all ${filters.status === 'current_month' ? 'bg-[#60a5fa]/20 text-[#60a5fa]' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>This Month</button>
+                        <button onClick={() => setFilters({...filters, status: "unscheduled"})} className={`w-full py-2 text-xs font-bold rounded-lg transition-all ${filters.status === 'unscheduled' ? 'bg-[#f87171]/20 text-[#f87171]' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>Unscheduled Only</button>
+                        <button onClick={() => setFilters({...filters, status: "completed"})} className={`w-full py-2 text-xs font-bold rounded-lg transition-all ${filters.status === 'completed' ? 'bg-[#4ade80]/20 text-[#4ade80]' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>Completed</button>
+                        <button onClick={() => setFilters({...filters, status: "all"})} className={`w-full py-2 text-xs font-bold rounded-lg transition-all ${filters.status === 'all' ? 'bg-white/10 text-white' : 'text-[#889995] hover:text-white hover:bg-white/5'}`}>All Clients</button>
                       </div>
                     </div>
                     <div>
-                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-2 block">RM Assigned</label>
-                      <select value={filters.rm} onChange={e => setFilters({...filters, rm: e.target.value})} className="w-full bg-[#050a09] border border-white/10 text-white text-sm rounded-xl p-2.5 outline-none focus:border-[#4ade80]">
+                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">RM Assigned</label>
+                      <select value={filters.rm} onChange={e => setFilters({...filters, rm: e.target.value})} className="w-full bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none">
                         <option value="">All RMs</option>
                         {uniqueRMs.map(rm => <option key={rm} value={rm}>{rm}</option>)}
                       </select>
                     </div>
                     <div>
-                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-2 block">Review Cycle</label>
-                      <select value={filters.cycle} onChange={e => setFilters({...filters, cycle: e.target.value})} className="w-full bg-[#050a09] border border-white/10 text-white text-sm rounded-xl p-2.5 outline-none focus:border-[#4ade80]">
+                      <label className="text-[10px] font-bold text-[#889995] uppercase mb-1.5 block">Review Cycle</label>
+                      <select value={filters.cycle} onChange={e => setFilters({...filters, cycle: e.target.value})} className="w-full bg-black border border-white/10 text-white text-xs rounded-lg p-2 focus:ring-1 focus:ring-brand-green outline-none">
                         <option value="">All Cycles</option>
                         {CYCLES.map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
@@ -352,20 +412,25 @@ export default function ClientReview() {
               )}
             </div>
 
-            {(filters.status === "due" || filters.status === "unscheduled" || filters.status === "current_month" || filters.status === "specific_month") && (
-              <div className={`mt-4 p-3 border rounded-xl flex items-center justify-center gap-2 
-                ${filters.status === "unscheduled" ? "bg-[#f87171]/10 border-[#f87171]/20" : 
-                  (filters.status === "current_month" || filters.status === "specific_month") ? "bg-[#60a5fa]/10 border-[#60a5fa]/20" : 
-                  "bg-[#fbbf24]/10 border-[#fbbf24]/20"}`}>
+            {/* DYNAMIC ALERT BANNER */}
+            {(filters.status === "due" || filters.status === "unscheduled" || filters.status === "current_month" || filters.status === "specific_month" || filters.status === "completed") && (
+              <div className={`mt-3 p-2.5 rounded-xl border flex items-center justify-center gap-2 
+                ${filters.status === "unscheduled" ? "bg-red-500/10 border-red-500/20" : 
+                  filters.status === "completed" ? "bg-[#4ade80]/10 border-[#4ade80]/30" : 
+                  (filters.status === "current_month" || filters.status === "specific_month") ? "bg-blue-500/10 border-blue-500/20" : 
+                  "bg-amber-500/10 border-amber-500/20"}`}>
                 <AlertCircle className={`w-4 h-4 
-                  ${filters.status === "unscheduled" ? "text-[#f87171]" : 
-                    (filters.status === "current_month" || filters.status === "specific_month") ? "text-[#60a5fa]" : 
-                    "text-[#fbbf24]"}`} />
+                  ${filters.status === "unscheduled" ? "text-red-400" : 
+                    filters.status === "completed" ? "text-[#4ade80]" : 
+                    (filters.status === "current_month" || filters.status === "specific_month") ? "text-blue-400" : 
+                    "text-amber-400"}`} />
                 <span className={`text-[10px] font-bold uppercase tracking-wider 
-                  ${filters.status === "unscheduled" ? "text-[#f87171]" : 
-                    (filters.status === "current_month" || filters.status === "specific_month") ? "text-[#60a5fa]" : 
-                    "text-[#fbbf24]"}`}>
+                  ${filters.status === "unscheduled" ? "text-red-400" : 
+                    filters.status === "completed" ? "text-[#4ade80]" : 
+                    (filters.status === "current_month" || filters.status === "specific_month") ? "text-blue-400" : 
+                    "text-amber-400"}`}>
                   {filters.status === "unscheduled" ? "Showing Unscheduled" : 
+                   filters.status === "completed" ? `Completed in ${format(parseISO(`${filters.targetMonth}-01`), "MMM yyyy")}` : 
                    filters.status === "current_month" ? `Showing ${format(new Date(), "MMMM")} Reviews` : 
                    filters.status === "specific_month" ? `Showing ${format(parseISO(`${filters.targetMonth}-01`), "MMMM yyyy")} Reviews` : 
                    "Showing Due / Overdue"}
@@ -374,9 +439,9 @@ export default function ClientReview() {
             )}
           </div>
           
-          <div className="overflow-y-auto flex-1 custom-scrollbar">
-            {loading ? <div className="p-8 text-center text-sm text-[#889995]">Loading...</div> : 
-             filtered.length === 0 ? <div className="p-8 text-center text-sm text-[#889995]">No reviews pending!</div> : 
+          <div className="overflow-y-auto flex-1 z-10 custom-scrollbar">
+            {loading ? <div className="p-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>Loading database...</div> : 
+             filtered.length === 0 ? <div className="p-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>No reviews match the criteria</div> : 
              groupedClients.map(group => {
                 const isMultiple = group.profiles.length > 1;
                 const groupKey = group.client_name?.toLowerCase() || "unknown";
@@ -384,57 +449,22 @@ export default function ClientReview() {
                 
                 if (isMultiple) {
                   return (
-                    <div key={groupKey} className="border-b border-white/5">
+                    <div key={groupKey} className="border-b border-[var(--border)]">
                       <button onClick={() => setExpandedGroup(isExpanded ? null : groupKey)} className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-white/5 transition-colors">
-                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 font-bold text-sm bg-white/5 text-white/50">{group.client_name?.[0]?.toUpperCase() || "?"}</div>
+                        <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-sm bg-white/5 text-white/50">{group.client_name?.[0]?.toUpperCase() || "?"}</div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-semibold text-white truncate">{group.client_name}</p>
-                          <p className="text-[10px] text-[#4ade80] mt-0.5 font-bold uppercase">{group.profiles.length} Profiles</p>
+                          <p className="text-[10px] text-brand-green mt-0.5 font-bold uppercase">{group.profiles.length} Profiles</p>
                         </div>
                         {isExpanded ? <ChevronUp className="w-4 h-4 text-white/40" /> : <ChevronDown className="w-4 h-4 text-white/40" />}
                       </button>
-                      {isExpanded && <div className="bg-black/40 pb-2">
-                        {group.profiles.map(c => (
-                          <button key={c.id} onClick={() => setSelected(c)} className={`w-full text-left py-2.5 pl-10 pr-4 flex items-center justify-between border-l-2 transition-colors ${selected?.id === c.id ? 'bg-[#008254]/10 border-[#4ade80]' : 'border-transparent hover:bg-white/5'}`}>
-                            <span className="text-xs font-semibold text-[#c8d4d0] truncate">{c.tax_status && c.tax_status !== "-" ? c.tax_status : "Standard"}</span>
-                            <ChevronRight className="w-3 h-3 text-white/30" />
-                          </button>
-                        ))}
+                      {isExpanded && <div className="bg-black/40 pb-2 shadow-inner">
+                        {group.profiles.map(c => renderProfileButton(c, true))}
                       </div>}
                     </div>
                   );
                 } else {
-                  const c = group.profiles[0];
-                  const isActive = selected?.id === c.id;
-                  let dueColor = "text-[#889995]";
-                  if (c.next_review_date) {
-                    const revDate = parseISO(c.next_review_date);
-                    if (filters.status === "specific_month" || filters.status === "current_month") {
-                      dueColor = "text-[#60a5fa]";
-                    } else if (isBefore(revDate, startOfDay(new Date()))) {
-                      dueColor = "text-[#f87171]";
-                    } else if (isSameMonth(revDate, new Date())) {
-                      dueColor = "text-[#fbbf24]";
-                    }
-                  } else { 
-                    dueColor = "text-[#f87171]";
-                  }
-
-                  return (
-                    <button key={c.id} onClick={() => { setSelected(c); setExpandedGroup(null); }} className={`w-full text-left px-4 py-3 flex items-center gap-3 border-b border-white/5 transition-colors ${isActive ? 'bg-[#008254]/10' : 'hover:bg-white/5'}`}>
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 font-bold text-sm ${isActive ? 'bg-[#4ade80] text-black' : 'bg-white/5 text-white/50'}`}>
-                        {c.client_name?.[0]?.toUpperCase() || "?"}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold truncate text-[#c8d4d0]">{c.client_name}</p>
-                        <div className={`text-[10px] mt-0.5 font-bold flex items-center gap-1 ${dueColor}`}>
-                          <Clock size={10} /> 
-                          {c.next_review_date ? format(parseISO(c.next_review_date), "MMM yyyy") : "Unscheduled"}
-                        </div>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-white/30" />
-                    </button>
-                  );
+                  return renderProfileButton(group.profiles[0], false);
                 }
               })
             }
@@ -445,7 +475,7 @@ export default function ClientReview() {
         <div className="lg:col-span-3 space-y-4">
           {!selected ? (
             <div className="rounded-2xl flex flex-col items-center justify-center min-h-[400px] text-center" style={{ background: "var(--glass)", border: "1px solid var(--border)" }}>
-              <CalendarCheck className="w-12 h-12 mb-4 text-[#008254]" />
+              <CalendarCheck className="w-12 h-12 mb-4 text-brand-green" />
               <h2 className="text-xl font-bold text-white mb-2">Review Management</h2>
               <p className="text-[#889995] max-w-sm">Select a client from the list to schedule, manage, and complete their portfolio reviews.</p>
             </div>

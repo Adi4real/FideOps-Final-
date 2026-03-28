@@ -3,13 +3,13 @@ import { Link } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import {
   CheckCircle2, Clock, AlertTriangle, CalendarClock,
-  TrendingUp, Users, UserPlus, ArrowRight, ClipboardCheck, AlertCircle
+  TrendingUp, Users, UserPlus, ArrowRight, ClipboardCheck, AlertCircle, Shield, Target, FileText
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell, Legend
 } from "recharts";
-import { format, isToday, isPast, parseISO, startOfMonth, subMonths, endOfMonth } from "date-fns";
+import { format, isToday, isPast, parseISO, startOfMonth, subMonths, endOfMonth, parse, isValid, isSameMonth } from "date-fns";
 
 // Firebase Imports
 import { db } from "../firebase"; 
@@ -27,20 +27,24 @@ const tooltipStyle = {
 let cachedTasks = [];
 let cachedLeads = [];
 let cachedClients = [];
+let cachedPolicies = [];
 let isListeningT = false;
 let isListeningL = false;
 let isListeningC = false;
+let isListeningP = false;
 let subsT = new Set();
 let subsL = new Set();
 let subsC = new Set();
+let subsP = new Set();
 
 export default function Dashboard() {
   const [tasks, setTasks] = useState(cachedTasks);
   const [leads, setLeads] = useState(cachedLeads);
   const [clients, setClients] = useState(cachedClients);
+  const [policies, setPolicies] = useState(cachedPolicies);
   const [loading, setLoading] = useState(cachedTasks.length === 0 || cachedClients.length === 0);
 
-  // Filter for Review Metrics
+  // Filter for Review & Insurance Metrics
   const [reviewMonth, setReviewMonth] = useState(format(new Date(), "yyyy-MM"));
 
   // --- SMART CACHED FETCH ---
@@ -48,6 +52,7 @@ export default function Dashboard() {
     subsT.add(setTasks);
     subsL.add(setLeads);
     subsC.add(setClients);
+    subsP.add(setPolicies);
 
     const sixMonthsAgoStr = format(subMonths(new Date(), 5), "yyyy-MM-01");
     const sixMonthsAgoDate = new Date(sixMonthsAgoStr);
@@ -87,10 +92,19 @@ export default function Dashboard() {
       setLoading(false);
     }
 
+    if (!isListeningP) {
+      isListeningP = true;
+      onSnapshot(collection(db, "insurance_policies"), (snap) => {
+        cachedPolicies = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        subsP.forEach(cb => cb(cachedPolicies));
+      });
+    }
+
     return () => { 
       subsT.delete(setTasks); 
       subsL.delete(setLeads); 
       subsC.delete(setClients); 
+      subsP.delete(setPolicies);
     };
   }, []);
 
@@ -107,18 +121,31 @@ export default function Dashboard() {
   // --- REVIEW METRICS ---
   const unscheduledReviews = clients.filter(c => !c.next_review_date).length;
   
-  // Completed in selected month (Checks the review timeline logs)
   const completedReviewsThisMonth = clients.filter(c => 
     (c.review_notes || []).some(n => n.date.startsWith(reviewMonth) && n.text.includes("Review Completed"))
   ).length;
 
-  // Pending for selected month (next_review_date is on or before the end of the selected month)
-  const endOfSelectedMonthStr = `${reviewMonth}-31`; // Safe string comparison boundary
+  const endOfSelectedMonthStr = `${reviewMonth}-31`; 
   const pendingReviewsThisMonth = clients.filter(c => 
     c.next_review_date && c.next_review_date <= endOfSelectedMonthStr
   ).length;
 
   const totalReviewsThisMonth = pendingReviewsThisMonth + completedReviewsThisMonth;
+
+  // --- INSURANCE METRICS ---
+  const targetMonthDate = parseISO(`${reviewMonth}-01`);
+  const policiesThisMonth = policies.filter(p => {
+    let d = parse(p.dueDate, "dd/MM/yyyy", new Date());
+    if (!isValid(d)) d = new Date(p.dueDate);
+    return isValid(d) && isSameMonth(d, targetMonthDate);
+  });
+
+  const renewedPolicies = policiesThisMonth.filter(p => p.renewalStatus === "Renewed");
+  const notRenewedPolicies = policiesThisMonth.filter(p => p.renewalStatus === "Not Renewed");
+  
+  // Start/End strings to pass into the Link state for filtering the Insurance page
+  const filterStartStr = format(startOfMonth(targetMonthDate), "yyyy-MM-dd");
+  const filterEndStr = format(endOfMonth(targetMonthDate), "yyyy-MM-dd");
 
   // --- CHARTS DATA ---
   const byEmployee = {};
@@ -225,12 +252,11 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* --- NEW SECTION: CLIENT REVIEW METRICS --- */}
+      {/* --- PERIODIC METRICS (Reviews & Insurance) --- */}
       <div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 2, color: "#fbbf24", background: "rgba(251,191,36,0.1)", padding: "3px 10px", borderRadius: 20, border: "1px solid rgba(251,191,36,0.2)" }}>Client Review Tracker</span>
-            <Link to={createPageUrl("ClientReview")} style={{ fontSize: 11, color: "#fbbf24", display: "flex", alignItems: "center", gap: 4 }}>Review Dashboard <ArrowRight className="w-3 h-3" /></Link>
+            <span style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 2, color: "#fbbf24", background: "rgba(251,191,36,0.1)", padding: "3px 10px", borderRadius: 20, border: "1px solid rgba(251,191,36,0.2)" }}>Periodic Engagements</span>
           </div>
           
           <div style={{ display: "flex", alignItems: "center", background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "10px", padding: "4px 10px" }}>
@@ -244,9 +270,8 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          
-          {/* LINK TO UNSCHEDULED REVIEWS */}
+        {/* Client Reviews Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
           <Link to={createPageUrl("ClientReview")} state={{ filterStatus: "unscheduled" }} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
             <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16 }} className="hover:border-[#f87171] hover:bg-white/5 transition-all">
               <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(248,113,113,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -259,7 +284,6 @@ export default function Dashboard() {
             </div>
           </Link>
 
-          {/* LINK TO DUE REVIEWS FOR THE SELECTED MONTH */}
           <Link to={createPageUrl("ClientReview")} state={{ filterStatus: "specific_month", targetMonth: reviewMonth }} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
             <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(96,165,250,0.3)" }} className="hover:border-[#60a5fa] hover:bg-white/5 transition-all">
               <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(96,165,250,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -269,21 +293,63 @@ export default function Dashboard() {
                 <p style={{ fontSize: 26, fontWeight: 800, color: "#60a5fa", lineHeight: 1 }}>
                   {pendingReviewsThisMonth} <span style={{fontSize: 12, color: "#889995", fontWeight: 600}}>/ {totalReviewsThisMonth}</span>
                 </p>
-                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Pending Due For {format(parseISO(`${reviewMonth}-01`), "MMMM")}</p>
+                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Pending Reviews ({format(parseISO(`${reviewMonth}-01`), "MMM")})</p>
               </div>
             </div>
           </Link>
 
-          {/* COMPLETED (Static, no link) */}
-          <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(74,222,128,0.3)" }}>
-            <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(74,222,128,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <CheckCircle2 style={{ width: 20, height: 20, color: "#4ade80" }} />
+          <Link to={createPageUrl("ClientReview")} state={{ filterStatus: "completed", targetMonth: reviewMonth }} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
+            <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(74,222,128,0.3)" }} className="hover:border-[#4ade80] hover:bg-white/5 transition-all">
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(74,222,128,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <CheckCircle2 style={{ width: 20, height: 20, color: "#4ade80" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 26, fontWeight: 800, color: "#4ade80", lineHeight: 1 }}>{completedReviewsThisMonth}</p>
+                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Completed Reviews ({format(parseISO(`${reviewMonth}-01`), "MMM")})</p>
+              </div>
             </div>
-            <div>
-              <p style={{ fontSize: 26, fontWeight: 800, color: "#4ade80", lineHeight: 1 }}>{completedReviewsThisMonth}</p>
-              <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Completed In {format(parseISO(`${reviewMonth}-01`), "MMMM")}</p>
+          </Link>
+        </div>
+
+        {/* Insurance Renewals Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <Link to={createPageUrl("InsuranceReview")} state={{ filterStartDate: filterStartStr, filterEndDate: filterEndStr, filterStatus: "All" }} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
+            <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16 }} className="hover:border-white/30 hover:bg-white/5 transition-all">
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <FileText style={{ width: 20, height: 20, color: "#c8d4d0" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 26, fontWeight: 800, color: "#c8d4d0", lineHeight: 1 }}>{policiesThisMonth.length}</p>
+                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Total Insurance Renewals ({format(parseISO(`${reviewMonth}-01`), "MMM")})</p>
+              </div>
             </div>
-          </div>
+          </Link>
+
+          <Link to={createPageUrl("InsuranceReview")} state={{ filterStartDate: filterStartStr, filterEndDate: filterEndStr, filterStatus: "Not Renewed" }} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
+            <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(251,191,36,0.3)" }} className="hover:border-[#fbbf24] hover:bg-white/5 transition-all">
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(251,191,36,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <AlertTriangle style={{ width: 20, height: 20, color: "#fbbf24" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 26, fontWeight: 800, color: "#fbbf24", lineHeight: 1 }}>
+                  {notRenewedPolicies.length} <span style={{fontSize: 12, color: "#889995", fontWeight: 600}}>/ {policiesThisMonth.length}</span>
+                </p>
+                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Pending Renewals ({format(parseISO(`${reviewMonth}-01`), "MMM")})</p>
+              </div>
+            </div>
+          </Link>
+
+          <Link to={createPageUrl("InsuranceReview")} state={{ filterStartDate: filterStartStr, filterEndDate: filterEndStr, filterStatus: "Renewed" }} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
+            <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(74,222,128,0.3)" }} className="hover:border-[#4ade80] hover:bg-white/5 transition-all">
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(74,222,128,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Shield style={{ width: 20, height: 20, color: "#4ade80" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 26, fontWeight: 800, color: "#4ade80", lineHeight: 1 }}>{renewedPolicies.length}</p>
+                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Renewed Successfully ({format(parseISO(`${reviewMonth}-01`), "MMM")})</p>
+              </div>
+            </div>
+          </Link>
         </div>
       </div>
 
