@@ -3,13 +3,13 @@ import { Link } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import {
   CheckCircle2, Clock, AlertTriangle, CalendarClock,
-  TrendingUp, Users, UserPlus, ArrowRight, ClipboardCheck, AlertCircle, Shield, Target, FileText
+  TrendingUp, Users, UserPlus, ArrowRight, ClipboardCheck, AlertCircle, Shield, Target, FileText, Banknote
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell, Legend
 } from "recharts";
-import { format, isToday, isPast, parseISO, startOfMonth, subMonths, endOfMonth, parse, isValid, isSameMonth } from "date-fns";
+import { format, isToday, isPast, parseISO, startOfMonth, subMonths, endOfMonth, parse, isValid, isSameMonth, differenceInMonths } from "date-fns";
 
 // Firebase Imports
 import { db } from "../firebase"; 
@@ -18,7 +18,8 @@ import { collection, query, onSnapshot, where } from "firebase/firestore";
 const COLORS = ["#008254", "#4ade80", "#60a5fa", "#fbbf24", "#f87171"];
 
 const tooltipStyle = {
-  contentStyle: { background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#c8d4d0" },
+  contentStyle: { background: "#0a1612", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, color: "#fff" }, // Forced white text for readability
+  itemStyle: { color: "#fff" }, // Ensures pie chart items are visible
   labelStyle: { color: "#889995" },
   cursor: { fill: "rgba(255,255,255,0.03)" },
 };
@@ -36,6 +37,14 @@ let subsT = new Set();
 let subsL = new Set();
 let subsC = new Set();
 let subsP = new Set();
+
+// --- HELPER: Calculate Goal Future Value ---
+const calculateGoalFV = (data) => {
+  const pv = parseFloat(data.pv) || 0;
+  const years = parseFloat(data.years) || 0;
+  const inf = parseFloat(data.inf) / 100 || 0;
+  return pv * Math.pow((1 + inf), years);
+};
 
 export default function Dashboard() {
   const [tasks, setTasks] = useState(cachedTasks);
@@ -120,16 +129,9 @@ export default function Dashboard() {
 
   // --- REVIEW METRICS ---
   const unscheduledReviews = clients.filter(c => !c.next_review_date).length;
-  
-  const completedReviewsThisMonth = clients.filter(c => 
-    (c.review_notes || []).some(n => n.date.startsWith(reviewMonth) && n.text.includes("Review Completed"))
-  ).length;
-
+  const completedReviewsThisMonth = clients.filter(c => (c.review_notes || []).some(n => n.date.startsWith(reviewMonth) && n.text.includes("Review Completed"))).length;
   const endOfSelectedMonthStr = `${reviewMonth}-31`; 
-  const pendingReviewsThisMonth = clients.filter(c => 
-    c.next_review_date && c.next_review_date <= endOfSelectedMonthStr
-  ).length;
-
+  const pendingReviewsThisMonth = clients.filter(c => c.next_review_date && c.next_review_date <= endOfSelectedMonthStr).length;
   const totalReviewsThisMonth = pendingReviewsThisMonth + completedReviewsThisMonth;
 
   // --- INSURANCE METRICS ---
@@ -139,13 +141,39 @@ export default function Dashboard() {
     if (!isValid(d)) d = new Date(p.dueDate);
     return isValid(d) && isSameMonth(d, targetMonthDate);
   });
-
   const renewedPolicies = policiesThisMonth.filter(p => p.renewalStatus === "Renewed");
   const notRenewedPolicies = policiesThisMonth.filter(p => p.renewalStatus === "Not Renewed");
-  
-  // Start/End strings to pass into the Link state for filtering the Insurance page
   const filterStartStr = format(startOfMonth(targetMonthDate), "yyyy-MM-dd");
   const filterEndStr = format(endOfMonth(targetMonthDate), "yyyy-MM-dd");
+
+  // --- GOAL METRICS ---
+  let totalGoals = 0;
+  let totalGoalValue = 0;
+  let goalsNearMaturity = 0; // Goals maturing within the next 24 months
+
+  clients.forEach(c => {
+    if (c.financial_goals && c.financial_goals.length > 0) {
+      totalGoals += c.financial_goals.length;
+      c.financial_goals.forEach(g => {
+        totalGoalValue += calculateGoalFV(g);
+        
+        // Calculate months until maturity
+        if (g.date && g.years) {
+          try {
+             const goalStartDate = parseISO(g.date);
+             const yearsToTarget = parseFloat(g.years);
+             if (!isNaN(yearsToTarget)) {
+               const targetDate = addYears(goalStartDate, yearsToTarget);
+               const monthsLeft = differenceInMonths(targetDate, new Date());
+               if (monthsLeft > 0 && monthsLeft <= 24) {
+                 goalsNearMaturity++;
+               }
+             }
+          } catch(e) {}
+        }
+      });
+    }
+  });
 
   // --- CHARTS DATA ---
   const byEmployee = {};
@@ -252,7 +280,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* --- PERIODIC METRICS (Reviews & Insurance) --- */}
+      {/* --- PERIODIC METRICS (Reviews, Goals & Insurance) --- */}
       <div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -268,6 +296,45 @@ export default function Dashboard() {
               style={{ background: "transparent", border: "none", outline: "none", fontSize: "12px" }} 
             />
           </div>
+        </div>
+
+        {/* Goal Tracker Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+          <Link to={createPageUrl("GoalTracker")} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
+            <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(167,139,250,0.3)" }} className="hover:border-[#a78bfa] hover:bg-white/5 transition-all">
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(167,139,250,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Target style={{ width: 20, height: 20, color: "#a78bfa" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 26, fontWeight: 800, color: "#a78bfa", lineHeight: 1 }}>{totalGoals}</p>
+                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Total Active Goals</p>
+              </div>
+            </div>
+          </Link>
+
+          <Link to={createPageUrl("GoalTracker")} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
+            <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16 }} className="hover:border-white/30 hover:bg-white/5 transition-all">
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Banknote style={{ width: 20, height: 20, color: "#c8d4d0" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 22, fontWeight: 800, color: "#c8d4d0", lineHeight: 1 }}>₹{(totalGoalValue / 10000000).toFixed(2)} Cr</p>
+                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Target Future Value</p>
+              </div>
+            </div>
+          </Link>
+
+          <Link to={createPageUrl("GoalTracker")} style={{ textDecoration: "none" }} className="hover:scale-[1.02] transition-transform">
+            <div style={{ ...cardBase, padding: 20, display: "flex", alignItems: "center", gap: 16, border: "1px solid rgba(245,158,11,0.3)" }} className="hover:border-[#f59e0b] hover:bg-white/5 transition-all">
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(245,158,11,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <CalendarClock style={{ width: 20, height: 20, color: "#f59e0b" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 26, fontWeight: 800, color: "#f59e0b", lineHeight: 1 }}>{goalsNearMaturity}</p>
+                <p style={{ fontSize: 12, color: "#889995", marginTop: 4 }}>Goals Maturing Soon (&lt; 2 Yrs)</p>
+              </div>
+            </div>
+          </Link>
         </div>
 
         {/* Client Reviews Row */}

@@ -1,12 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
-import { Search, ChevronRight, ChevronDown, ChevronUp, Save, Plus, X, Clock, FileText, CheckCircle2, Filter, CalendarCheck, AlertTriangle, Star, Edit3, Download, Image as ImageIcon, Target, Shield, HeartPulse, PiggyBank, AlertCircle, XCircle } from "lucide-react";
+import { 
+  Search, ChevronRight, ChevronDown, ChevronUp, Save, Plus, X, Clock, 
+  FileText, CheckCircle2, Filter, CalendarCheck, AlertTriangle, Star, Edit3, 
+  Download, Image as ImageIcon, Target, Shield, HeartPulse, PiggyBank, 
+  AlertCircle, XCircle, Wallet, Calendar, Info, Pencil, Trash2 
+} from "lucide-react";
 import { format, parseISO, addMonths, addYears, isBefore, isSameMonth, endOfMonth, startOfDay } from "date-fns";
 import html2canvas from "html2canvas";
 
 // Firebase Imports
 import { db } from "../firebase"; 
-import { collection, query, onSnapshot, orderBy, doc, updateDoc, arrayUnion } from "firebase/firestore";
+import { collection, query, onSnapshot, orderBy, doc, updateDoc, arrayUnion, writeBatch } from "firebase/firestore";
 
 const PRIORITIES = ["High", "Medium", "Low"];
 const CYCLES = ["Monthly", "Quarterly", "Half-yearly", "Annually", "Custom"];
@@ -32,10 +37,16 @@ const emptyPlan = {
   }
 };
 
+// --- GLOBAL MEMORY CACHE ---
 let cachedClients = [];
 let isListeningClients = false;
 let clientSubs = new Set();
 
+let cachedPolicies = [];
+let isListeningPolicies = false;
+let policySubs = new Set();
+
+// --- HELPERS ---
 const toInputDate = (dateStr) => {
   if (!dateStr || dateStr === "-") return "";
   try {
@@ -52,10 +63,20 @@ const toDisplayDate = (dateStr) => {
   } catch (e) { return dateStr; }
 };
 
+const getSIPTotal = (investments) => {
+  return (investments || []).reduce((sum, inv) => {
+    if (inv.type === "LS" || inv.frequency_type === "One-time") return sum; 
+    const amt = parseFloat(String(inv.installment_amount).replace(/,/g, ''));
+    return sum + (isNaN(amt) ? 0 : amt);
+  }, 0);
+};
+
 export default function ClientReview() {
   const location = useLocation();
 
   const [clients, setClients] = useState(cachedClients);
+  const [allPolicies, setAllPolicies] = useState(cachedPolicies);
+  
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(cachedClients.length === 0);
@@ -82,6 +103,15 @@ export default function ClientReview() {
   const [exporting, setExporting] = useState(false);
   const printRef = useRef(null);
 
+  // --- SIP PORTFOLIO STATES ---
+  const [expandedInv, setExpandedInv] = useState(null);
+  const [editingInv, setEditingInv] = useState(null);
+  const [invForm, setInvForm] = useState({});
+
+  // --- INSURANCE INTEGRATION STATES ---
+  const [selectedSuggestions, setSelectedSuggestions] = useState(new Set());
+  const [insSearch, setInsSearch] = useState("");
+
   useEffect(() => {
     if (location.state?.filterStatus) {
       setFilters(prev => ({
@@ -105,17 +135,35 @@ export default function ClientReview() {
     } else {
       setLoading(false);
     }
-    return () => clientSubs.delete(setClients);
+
+    policySubs.add(setAllPolicies);
+    if (!isListeningPolicies) {
+      isListeningPolicies = true;
+      onSnapshot(collection(db, "insurance_policies"), (snap) => {
+        cachedPolicies = snap.docs.map(d => ({ docId: d.id, ...d.data() }));
+        policySubs.forEach(cb => cb(cachedPolicies));
+      });
+    }
+
+    return () => {
+      clientSubs.delete(setClients);
+      policySubs.delete(setAllPolicies);
+    };
   }, []);
 
   useEffect(() => {
     if (selected) {
       const updated = clients.find(c => c.id === selected.id);
-      if (updated) {
-        setSelected(updated);
-      }
+      if (updated) setSelected(updated);
     }
-  }, [clients, selected]);
+  }, [clients]);
+
+  useEffect(() => {
+    setSelectedSuggestions(new Set());
+    setInsSearch("");
+    setExpandedInv(null);
+    setEditingInv(null);
+  }, [selected]);
 
   const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
 
@@ -139,16 +187,11 @@ export default function ClientReview() {
       matchesStatus = !c.next_review_date;
     } else if (filters.status === "current_month") {
       if (!c.next_review_date) matchesStatus = false;
-      else {
-        matchesStatus = isSameMonth(parseISO(c.next_review_date), new Date());
-      }
+      else matchesStatus = isSameMonth(parseISO(c.next_review_date), new Date());
     } else if (filters.status === "specific_month") {
       if (!c.next_review_date) matchesStatus = false;
-      else {
-        matchesStatus = c.next_review_date.startsWith(filters.targetMonth);
-      }
+      else matchesStatus = c.next_review_date.startsWith(filters.targetMonth);
     } else if (filters.status === "completed") {
-      // NEW: Filter explicitly for completed reviews in the target month based on notes history
       matchesStatus = (c.review_notes || []).some(n => n.date.startsWith(filters.targetMonth) && n.text.includes("Review Completed"));
     }
     
@@ -214,27 +257,15 @@ export default function ClientReview() {
     } catch (e) { console.error(e); } finally { setSavingNote(false); }
   };
 
-  const handleCreateNewPlan = () => {
-    setPlanDraft(emptyPlan);
-    setActivePlanId(null);
-    setPlanMode("edit");
-    setShowPlanModal(true);
-  };
-
-  const handleViewPlan = (plan) => {
-    setPlanDraft(plan);
-    setActivePlanId(plan.id);
-    setPlanMode("view");
-    setShowPlanModal(true);
-  };
-
+  // --- REPORT MODAL HELPERS ---
+  const handleCreateNewPlan = () => { setPlanDraft(emptyPlan); setActivePlanId(null); setPlanMode("edit"); setShowPlanModal(true); };
+  const handleViewPlan = (plan) => { setPlanDraft(plan); setActivePlanId(plan.id); setPlanMode("view"); setShowPlanModal(true); };
   const handleSavePlan = async () => {
     if (!selected) return;
     setSavingPlan(true);
     try {
       const plans = selected.review_plans || [];
       let newPlans = [...plans];
-
       if (activePlanId) {
         const idx = newPlans.findIndex(p => p.id === activePlanId);
         if (idx > -1) newPlans[idx] = { ...planDraft, id: activePlanId, date: planDraft.date || format(new Date(), "yyyy-MM-dd") };
@@ -243,8 +274,7 @@ export default function ClientReview() {
       }
       await updateDoc(doc(db, "clients", selected.id), { review_plans: newPlans });
       setShowPlanModal(false);
-    } catch (e) { console.error("Error saving plan:", e); alert("Failed to save plan."); } 
-    finally { setSavingPlan(false); }
+    } catch (e) { console.error(e); alert("Failed to save plan."); } finally { setSavingPlan(false); }
   };
 
   const handleDownloadImage = async () => {
@@ -258,16 +288,14 @@ export default function ClientReview() {
       element.style.overflow = 'visible';
 
       const canvas = await html2canvas(element, { backgroundColor: '#0a1612', scale: 2, useCORS: true, logging: false });
-      const dataUrl = canvas.toDataURL('image/png');
       const link = document.createElement('a');
       link.download = `${selected?.client_name.replace(/\s+/g, '_')}_Review.png`;
-      link.href = dataUrl;
+      link.href = canvas.toDataURL('image/png');
       link.click();
 
       element.style.height = originalHeight;
       element.style.overflow = originalOverflow;
-    } catch (err) { console.error("Failed to export image", err); alert("Failed to generate image."); } 
-    finally { setExporting(false); }
+    } catch (err) { console.error(err); } finally { setExporting(false); }
   };
 
   const setNested = (section, field, value) => { setPlanDraft(p => ({ ...p, [section]: { ...p[section], [field]: value } })); };
@@ -275,6 +303,79 @@ export default function ClientReview() {
   const addMfAction = () => { setPlanDraft(p => ({ ...p, mf_actions: [...(p.mf_actions || []), { fund: "", sip_increase: "", sip_cease: "", switch: "", redemption: "", action: "", suggestion: "", remarks: "" }] })); };
   const updateMfAction = (index, field, value) => { setPlanDraft(p => { const updated = [...p.mf_actions]; updated[index][field] = value; return { ...p, mf_actions: updated }; }); };
   const removeMfAction = (index) => { setPlanDraft(p => ({ ...p, mf_actions: p.mf_actions.filter((_, i) => i !== index) })); };
+
+  // --- SIP PORTFOLIO ACTIONS ---
+  const handleSaveInvestment = async (e) => {
+    e.preventDefault();
+    try {
+      const targetKey = Object.keys(selected).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
+      const updatedPortfolio = [...(selected[targetKey] || [])];
+      const finalFormToSave = { ...invForm };
+      
+      const targetIndex = finalFormToSave.originalIndex;
+      delete finalFormToSave.originalIndex;
+      updatedPortfolio[targetIndex] = finalFormToSave;
+
+      await updateDoc(doc(db, "clients", selected.id), { [targetKey]: updatedPortfolio });
+      setEditingInv(null); setExpandedInv(null);
+    } catch (error) { console.error("Error saving investment:", error); }
+  };
+
+  const handleDeleteInvestment = async (originalIndex) => {
+    if (!window.confirm("Are you sure you want to permanently delete this SIP?")) return;
+    try {
+      const targetKey = Object.keys(selected).find(k => k.toLowerCase().includes('portfolio') || k.toLowerCase().includes('investments') || k.toLowerCase().includes('sips')) || "investments";
+      const updatedPortfolio = [...(selected[targetKey] || [])];
+      updatedPortfolio.splice(originalIndex, 1);
+
+      await updateDoc(doc(db, "clients", selected.id), { [targetKey]: updatedPortfolio });
+      setEditingInv(null); setExpandedInv(null);
+    } catch (error) { console.error("Error deleting investment:", error); }
+  };
+
+  // --- INSURANCE ACTIONS ---
+  const handleLinkSinglePolicy = async (policyDocId) => {
+    try {
+      await updateDoc(doc(db, "insurance_policies", policyDocId), {
+        linkedClientId: selected.id,
+        linkedClientName: selected.client_name
+      });
+      const newSet = new Set(selectedSuggestions);
+      newSet.delete(policyDocId);
+      setSelectedSuggestions(newSet);
+    } catch (err) { console.error("Error linking policy:", err); alert("Failed to link policy."); }
+  };
+
+  const handleBulkLinkPolicies = async () => {
+    if (selectedSuggestions.size === 0) return;
+    try {
+      const batch = writeBatch(db);
+      selectedSuggestions.forEach(docId => {
+        batch.update(doc(db, "insurance_policies", docId), {
+          linkedClientId: selected.id,
+          linkedClientName: selected.client_name
+        });
+      });
+      await batch.commit();
+      setSelectedSuggestions(new Set());
+    } catch (err) { console.error("Error bulk linking policies:", err); alert("Failed to link policies."); }
+  };
+
+  const handleUnlinkPolicy = async (policyDocId) => {
+    if (!window.confirm("Are you sure you want to unlink this policy from this client?")) return;
+    try {
+      await updateDoc(doc(db, "insurance_policies", policyDocId), {
+        linkedClientId: null,
+        linkedClientName: null
+      });
+    } catch (err) { console.error("Error unlinking policy:", err); }
+  };
+
+  const toggleSuggestionSelection = (docId) => {
+    const newSet = new Set(selectedSuggestions);
+    if (newSet.has(docId)) newSet.delete(docId); else newSet.add(docId);
+    setSelectedSuggestions(newSet);
+  };
 
   // --- UI RENDER HELPERS ---
   const renderProfileButton = (c, isSubItem) => {
@@ -286,16 +387,16 @@ export default function ClientReview() {
       const revDate = parseISO(c.next_review_date);
       dueText = format(revDate, "MMM yyyy");
       if (filters.status === "completed") {
-        dueColor = "#4ade80"; // Completed Green
+        dueColor = "#4ade80"; 
       } else if (filters.status === "specific_month" || filters.status === "current_month") {
-        dueColor = "#60a5fa"; // Blue
+        dueColor = "#60a5fa"; 
       } else if (isBefore(revDate, startOfDay(new Date()))) {
-        dueColor = "#f87171"; // Overdue Red
+        dueColor = "#f87171"; 
       } else if (isSameMonth(revDate, new Date())) {
-        dueColor = "#fbbf24"; // Due Yellow
+        dueColor = "#fbbf24"; 
       }
     } else {
-      dueColor = "#f87171"; // Unscheduled Red
+      dueColor = "#f87171"; 
     }
 
     return (
@@ -325,7 +426,40 @@ export default function ClientReview() {
     );
   };
 
+  // --- DERIVED DATA FOR TABS ---
+  const sipInvestmentsWithIndex = selected ? (selected.investments || [])
+    .map((inv, idx) => ({ ...inv, originalIndex: idx }))
+    .filter(inv => inv.type !== "LS" && inv.frequency_type !== "One-time") : [];
+
+  const clientPolicies = selected ? allPolicies.filter(p => p.linkedClientId === selected.id) : [];
+  
+  const displaySuggestedPolicies = selected ? allPolicies.filter(p => {
+    if (p.linkedClientId) return false;
+    if (insSearch.trim().length > 0) {
+      const q = insSearch.toLowerCase();
+      return (p.policyHolder?.toLowerCase().includes(q) || p.policyNo?.toLowerCase().includes(q) || p.plan?.toLowerCase().includes(q));
+    } else {
+      const cName = String(selected.client_name || "").toLowerCase().trim();
+      const pName = String(p.policyHolder || "").toLowerCase().trim();
+      if (!cName || !pName) return false;
+      if (cName === pName) return true;
+      const cParts = cName.split(/[\s,.-]+/).filter(x => x.length > 2); 
+      const pParts = pName.split(/[\s,.-]+/).filter(x => x.length > 2);
+      return cParts.some(cp => pParts.includes(cp));
+    }
+  }) : [];
+
+  const isAllInsSelected = displaySuggestedPolicies.length > 0 && displaySuggestedPolicies.every(p => selectedSuggestions.has(p.docId));
+  const toggleSelectAllIns = () => {
+    const newSet = new Set(selectedSuggestions);
+    if (isAllInsSelected) displaySuggestedPolicies.forEach(p => newSet.delete(p.docId));
+    else displaySuggestedPolicies.forEach(p => newSet.add(p.docId));
+    setSelectedSuggestions(newSet);
+  };
+
+  // Styles
   const iStyle = { padding: "8px 12px", borderRadius: 8, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.1)", color: "#c8d4d0", fontSize: 13, width: "100%", outline: "none" };
+  const inputStyle = { padding: "6px 10px", borderRadius: 6, background: "#0a1612", border: "1px solid rgba(255,255,255,0.15)", color: "#c8d4d0", fontSize: 12, width: "100%" };
   const tInputStyle = { width: "100%", background: "rgba(255,255,255,0.05)", border: "none", borderRadius: "4px", padding: "6px 8px", color: "#fff", outline: "none", fontSize: "13px" };
   const thStyle = { padding: "16px", textAlign: "left", fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 1, color: "#889995", borderBottom: "1px solid rgba(255,255,255,0.05)" };
   const tdStyle = { padding: "16px", borderBottom: "1px solid rgba(255,255,255,0.02)", fontSize: 13, fontWeight: 700, color: "#fff" };
@@ -336,6 +470,8 @@ export default function ClientReview() {
       <style>{`
         input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(83%) sepia(51%) saturate(1149%) hue-rotate(339deg) brightness(101%) contrast(105%); cursor: pointer; }
         input[type="date"] { color-scheme: dark; color: #fbbf24 !important; font-weight: 700; }
+        input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type="number"] { -moz-appearance: textfield; }
         .report-table-row:hover { background: rgba(255,255,255,0.02); }
       `}</style>
 
@@ -524,12 +660,20 @@ export default function ClientReview() {
 
               {/* Tabs Container */}
               <div className="rounded-2xl p-6" style={{ background: "var(--glass)", border: "1px solid var(--border)", backdropFilter: "blur(10px)" }}>
-                <div className="flex gap-6 border-b border-white/10 mb-6">
+                
+                {/* TABS NAVIGATION */}
+                <div className="flex gap-6 border-b border-white/10 mb-6 overflow-x-auto custom-scrollbar whitespace-nowrap pb-1">
                   <button onClick={() => setActiveTab('notes')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'notes' ? 'text-[#4ade80] border-b-2 border-[#4ade80]' : 'text-[#889995] hover:text-white'}`}>
                     <Clock className="w-4 h-4" /> Review Notes Log
                   </button>
                   <button onClick={() => setActiveTab('plan')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'plan' ? 'text-[#4ade80] border-b-2 border-[#4ade80]' : 'text-[#889995] hover:text-white'}`}>
                     <FileText className="w-4 h-4" /> Document History
+                  </button>
+                  <button onClick={() => setActiveTab('portfolio')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'portfolio' ? 'text-[#4ade80] border-b-2 border-[#4ade80]' : 'text-[#889995] hover:text-white'}`}>
+                    <Wallet className="w-4 h-4" /> SIPs ({sipInvestmentsWithIndex.length})
+                  </button>
+                  <button onClick={() => setActiveTab('insurance')} className={`pb-3 text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'insurance' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-[#889995] hover:text-white'}`}>
+                    <Shield className="w-4 h-4" /> Insurance ({clientPolicies.length})
                   </button>
                 </div>
 
@@ -595,6 +739,265 @@ export default function ClientReview() {
                     </div>
                   </div>
                 )}
+
+                {/* TAB 3: INVESTMENT PORTFOLIO (SIPS ONLY) */}
+                {activeTab === "portfolio" && (
+                  <div className="animate-in fade-in duration-200">
+                    <div className="flex justify-end mb-4">
+                      <span className="text-xs font-bold px-3 py-1.5 rounded-lg border border-[#4ade80]/30 bg-[#4ade80]/10 text-[#4ade80]">
+                        Total SIPs: ₹{getSIPTotal(selected.investments).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    {sipInvestmentsWithIndex.length === 0 ? (
+                      <div className="text-center py-12 border border-dashed border-white/10 rounded-xl bg-black/20">
+                        <p className="text-sm text-[#889995] mb-4">No active SIPs found.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-6 max-h-[500px] overflow-y-auto pr-1 custom-scrollbar">
+                        {Object.entries(
+                          sipInvestmentsWithIndex.reduce((acc, inv) => {
+                            const folio = inv.folio_number && inv.folio_number !== "-" ? inv.folio_number : "Unassigned Folios";
+                            if (!acc[folio]) acc[folio] = [];
+                            acc[folio].push(inv);
+                            return acc;
+                          }, {})
+                        ).map(([folio, invs]) => (
+                          <div key={folio} className="p-4 rounded-xl" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--border)" }}>
+                            <div className="mb-4">
+                              <p className="text-[10px] uppercase font-bold text-[#889995] mb-1">Folio Number</p>
+                              <p className="text-sm font-mono text-white tracking-wider">{folio}</p>
+                            </div>
+                            
+                            <div className="space-y-3">
+                              {invs.map((inv, idx) => {
+                                const isExpanded = expandedInv === inv.originalIndex;
+                                const isEditing = editingInv === inv.originalIndex;
+
+                                return (
+                                  <div key={idx} className="rounded-lg overflow-hidden transition-all border border-white/5 bg-black/20 hover:border-white/10">
+                                    <div className="p-3 flex items-center justify-between cursor-pointer hover:bg-white/5" onClick={() => { if(!isEditing) setExpandedInv(isExpanded ? null : inv.originalIndex) }}>
+                                      <div>
+                                        <p className="text-sm font-bold text-[#4ade80]">{inv.scheme_name}</p>
+                                        <p className="text-[10px] font-mono mt-1 text-[#889995]">xSIP: {inv.xsip_reg_no}</p>
+                                      </div>
+                                      <div className="flex items-center gap-4">
+                                        <div className="text-right">
+                                          <p className="text-sm font-bold text-white">{inv.installment_amount !== "-" && !isNaN(inv.installment_amount) ? `₹${Number(inv.installment_amount).toLocaleString('en-IN')}` : inv.installment_amount}</p>
+                                          <p className="text-[9px] uppercase tracking-wider text-[#889995] mt-0.5">{inv.frequency_type}</p>
+                                        </div>
+                                        {!isEditing && (isExpanded ? <ChevronUp className="w-4 h-4 text-white/50" /> : <ChevronDown className="w-4 h-4 text-white/50" />)}
+                                      </div>
+                                    </div>
+
+                                    {isExpanded && (
+                                      isEditing ? (
+                                        <div className="p-4 border-t border-white/5 bg-black/60 animate-in slide-in-from-top-2">
+                                          <form onSubmit={handleSaveInvestment} className="flex flex-col gap-3">
+                                            <div className="grid grid-cols-2 gap-3">
+                                              <div>
+                                                <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">Folio Number</label>
+                                                <input value={invForm.folio_number || ""} onChange={e => setInvForm({...invForm, folio_number: e.target.value})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-[#4ade80]" />
+                                              </div>
+                                              <div>
+                                                <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">xSIP Reg No</label>
+                                                <input value={invForm.xsip_reg_no || ""} onChange={e => setInvForm({...invForm, xsip_reg_no: e.target.value})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-[#4ade80]" />
+                                              </div>
+                                              <div className="col-span-2">
+                                                <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">Scheme Name</label>
+                                                <input value={invForm.scheme_name || ""} onChange={e => setInvForm({...invForm, scheme_name: e.target.value})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-[#4ade80]" />
+                                              </div>
+                                              <div>
+                                                <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">Amount (₹)</label>
+                                                <input type="number" value={invForm.installment_amount || ""} onChange={e => setInvForm({...invForm, installment_amount: e.target.value})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-[#4ade80]" />
+                                              </div>
+                                              <div className="col-span-2 grid grid-cols-2 gap-3 mt-2">
+                                                <div>
+                                                  <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">Start Date</label>
+                                                  <input type="date" value={toInputDate(invForm.start_date)} onChange={e => setInvForm({...invForm, start_date: toDisplayDate(e.target.value)})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-[#4ade80]" />
+                                                </div>
+                                                <div>
+                                                  <label className="text-[9px] uppercase font-bold text-[#889995] mb-1 block">End Date</label>
+                                                  <input type="date" value={toInputDate(invForm.end_date)} onChange={e => setInvForm({...invForm, end_date: toDisplayDate(e.target.value)})} className="w-full bg-[#0a1612] border border-white/10 text-white text-xs rounded-lg p-2 outline-none focus:border-[#4ade80]" />
+                                                </div>
+                                              </div>
+                                            </div>
+                                            <div className="flex gap-2 justify-end mt-3 border-t border-white/5 pt-3">
+                                              <div className="flex-1"></div>
+                                              <button type="button" onClick={() => setEditingInv(null)} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-white/5 text-[#889995] hover:bg-white/10 transition-colors">Cancel</button>
+                                              <button type="submit" className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#008254] text-white hover:bg-[#008254]/80 transition-colors">Save Details</button>
+                                            </div>
+                                          </form>
+                                        </div>
+                                      ) : (
+                                        <div className="p-3 border-t border-white/5 bg-black/40 grid grid-cols-2 gap-4 animate-in slide-in-from-top-2 relative">
+                                          <div className="absolute top-3 right-3 flex items-center gap-2">
+                                            <button onClick={() => { setEditingInv(inv.originalIndex); setInvForm(inv); }} className="text-[#60a5fa] bg-blue-500/10 p-1.5 rounded-md border border-blue-500/20 hover:bg-blue-500/20 transition-colors" title="Edit SIP">
+                                              <Pencil size={12} />
+                                            </button>
+                                            <button onClick={() => handleDeleteInvestment(inv.originalIndex)} className="text-[#f87171] bg-red-500/10 p-1.5 rounded-md border border-red-500/20 hover:bg-red-500/20 transition-colors" title="Delete SIP">
+                                              <Trash2 size={12} />
+                                            </button>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <Calendar className="w-3 h-3 text-[#4ade80]" />
+                                            <div>
+                                              <p className="text-[8px] uppercase tracking-wider text-[#889995]">Start Date</p>
+                                              <p className="text-[10px] text-white">{inv.start_date || "—"}</p>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <Calendar className="w-3 h-3 text-[#f87171]" />
+                                            <div>
+                                              <p className="text-[8px] uppercase tracking-wider text-[#889995]">End Date</p>
+                                              <p className="text-[10px] text-white">{inv.end_date || "—"}</p>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 4: INSURANCE (LINKED POLICIES) */}
+                {activeTab === "insurance" && (
+                  <div className="animate-in fade-in duration-200">
+                    
+                    {/* Suggestion Banner */}
+                    {displaySuggestedPolicies.length > 0 && (
+                      <div className="mb-6 p-4 rounded-xl border border-blue-500/30 bg-blue-500/10">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-3 gap-3">
+                          <div className="flex items-center gap-3">
+                            <input 
+                              type="checkbox" 
+                              className="w-4 h-4 rounded cursor-pointer accent-blue-500"
+                              checked={isAllInsSelected}
+                              onChange={toggleSelectAllIns}
+                            />
+                            <h4 className="text-sm font-bold text-blue-400 flex items-center gap-1">
+                              <Info size={16} /> 
+                              {insSearch ? `Search Results (${displaySuggestedPolicies.length})` : `Suggested Matches (${displaySuggestedPolicies.length})`}
+                            </h4>
+                          </div>
+                          {selectedSuggestions.size > 0 && (
+                            <button 
+                              onClick={handleBulkLinkPolicies} 
+                              className="text-xs px-3 py-1.5 bg-blue-500 text-white rounded hover:bg-blue-600 font-bold transition-all shadow-lg shadow-blue-500/20 whitespace-nowrap"
+                            >
+                              Link {selectedSuggestions.size} Selected
+                            </button>
+                          )}
+                        </div>
+                        
+                        <p className="text-xs text-blue-300/80 mb-4">
+                          {insSearch 
+                            ? "Select records below to link them to this client's profile." 
+                            : `We found existing records that may belong to "${selected.client_name}". Select and link them to attach them to this profile.`}
+                        </p>
+                        
+                        {/* Search bar inside the suggestion banner for clarity */}
+                        <div className="relative mb-4">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#889995]" />
+                          <input 
+                            type="text" 
+                            placeholder="Search all unlinked policies to manually link..." 
+                            value={insSearch}
+                            onChange={(e) => setInsSearch(e.target.value)}
+                            className="w-full bg-[#050a09] border border-white/10 text-white text-sm rounded-xl py-2.5 pl-10 pr-3 outline-none focus:border-blue-500 transition-colors"
+                          />
+                          {insSearch && (
+                            <button onClick={() => setInsSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#889995] hover:text-white">
+                              <X size={14} />
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+                          {displaySuggestedPolicies.map(p => (
+                            <div key={p.docId} className="flex items-center gap-3 bg-black/40 p-3 rounded-lg border border-blue-500/20">
+                              <input 
+                                type="checkbox" 
+                                className="w-4 h-4 rounded cursor-pointer accent-blue-500"
+                                checked={selectedSuggestions.has(p.docId)}
+                                onChange={() => toggleSuggestionSelection(p.docId)}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-bold text-white flex items-center gap-2 truncate">
+                                  {p.policyHolder} <span className="text-[10px] font-medium text-blue-300/70 truncate">- {p.plan}</span>
+                                </p>
+                                <p className="text-[10px] font-mono text-blue-400 mt-1">
+                                  Policy: {p.policyNo} | Premium: ₹{Number(p.premiumAmount || 0).toLocaleString('en-IN')}
+                                </p>
+                              </div>
+                              <button 
+                                onClick={() => handleLinkSinglePolicy(p.docId)} 
+                                className="text-xs px-3 py-1.5 bg-blue-500/20 text-blue-400 rounded border border-blue-500/30 hover:bg-blue-500 hover:text-white font-bold transition-all"
+                              >
+                                Link
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Linked Policies List */}
+                    {clientPolicies.length === 0 ? (
+                      <div className="text-center py-12 border border-dashed border-white/10 rounded-xl bg-black/20">
+                        <p className="text-sm text-[#889995] mb-4">No insurance policies linked to this client.</p>
+                        <p className="text-xs text-white/50">If policies exist, search for them above to link them.</p>
+                        
+                        {displaySuggestedPolicies.length === 0 && !insSearch && (
+                           <div className="relative mt-4 max-w-sm mx-auto">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#889995]" />
+                            <input 
+                              type="text" 
+                              placeholder="Search all unlinked policies..." 
+                              value={insSearch}
+                              onChange={(e) => setInsSearch(e.target.value)}
+                              className="w-full bg-[#050a09] border border-white/10 text-white text-sm rounded-xl py-2.5 pl-10 pr-3 outline-none focus:border-blue-500 transition-colors text-left"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
+                        {clientPolicies.map(p => (
+                          <div key={p.docId} className="p-4 rounded-xl border border-white/10 bg-white/5 flex justify-between items-center group hover:bg-white/10 transition-colors">
+                            <div>
+                              <p className="text-[10px] uppercase font-bold text-blue-400 tracking-wider mb-1 flex items-center gap-1">
+                                {p.planType}
+                                <span className="text-white/30">•</span>
+                                <span className={p.renewalStatus === 'Renewed' ? 'text-[#4ade80]' : 'text-yellow-400'}>{p.renewalStatus}</span>
+                              </p>
+                              <p className="text-sm font-bold text-white">{p.plan}</p>
+                              <p className="text-[10px] text-[#889995] mt-1 font-mono tracking-wider">Policy: {p.policyNo}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[10px] uppercase font-bold text-[#889995] tracking-wider mb-1">Premium Due: {p.dueDate}</p>
+                              <p className="text-sm font-black text-blue-400">₹{Number(p.premiumAmount || 0).toLocaleString('en-IN')}</p>
+                              <button 
+                                onClick={() => handleUnlinkPolicy(p.docId)} 
+                                className="text-[10px] text-red-400 mt-1.5 opacity-0 group-hover:opacity-100 hover:underline transition-opacity"
+                              >
+                                Unlink Record
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
               </div>
             </>
           )}

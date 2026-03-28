@@ -335,7 +335,7 @@ export default function GoalTracker() {
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-xl bg-[#008254]/20 flex items-center justify-center text-[#4ade80]"><CalendarClock size={24}/></div>
             <div>
-              <h1 className="text-2xl font-black text-white tracking-wide">Financial Goal Planner</h1>
+              <h1 className="text-2xl font-black text-white tracking-wide">Financial Goal Tracker</h1>
               <p className="text-sm text-[#889995] font-medium mt-1">Map out client futures and required investments.</p>
             </div>
           </div>

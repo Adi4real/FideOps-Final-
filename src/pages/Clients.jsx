@@ -146,6 +146,7 @@ export default function Clients() {
 
   // --- INSURANCE INTEGRATION STATES ---
   const [selectedSuggestions, setSelectedSuggestions] = useState(new Set()); // For bulk linking
+  const [insSearch, setInsSearch] = useState(""); // <-- NEW: Insurance Search state
 
   // --- TASK EDITING STATE ---
   const [editingTaskId, setEditingTaskId] = useState(null);
@@ -179,33 +180,52 @@ export default function Clients() {
     return () => { unsubClients(); unsubTasks(); unsubPolicies(); };
   }, []);
 
-  // Clear selected policy suggestions when switching clients
+  // Clear selections and searches when switching clients
   useEffect(() => {
     setSelectedSuggestions(new Set());
+    setInsSearch("");
   }, [selected]);
 
-  // --- FUZZY MATCHING FOR INSURANCE ---
+  // --- FUZZY MATCHING & SEARCHING FOR INSURANCE ---
   const clientPolicies = selected ? allPolicies.filter(p => p.linkedClientId === selected.id) : [];
   
-  const suggestedPolicies = selected ? allPolicies.filter(p => {
-    // 1. Skip if already linked to ANY client
-    if (p.linkedClientId) return false;
+  const displaySuggestedPolicies = selected ? allPolicies.filter(p => {
+    if (p.linkedClientId) return false; // Must be unlinked
 
-    const cName = String(selected.client_name || "").toLowerCase().trim();
-    const pName = String(p.policyHolder || "").toLowerCase().trim();
+    if (insSearch.trim().length > 0) {
+      // Manual Search Mode
+      const q = insSearch.toLowerCase();
+      return (
+        p.policyHolder?.toLowerCase().includes(q) ||
+        p.policyNo?.toLowerCase().includes(q) ||
+        p.plan?.toLowerCase().includes(q)
+      );
+    } else {
+      // Auto-Fuzzy Match Mode
+      const cName = String(selected.client_name || "").toLowerCase().trim();
+      const pName = String(p.policyHolder || "").toLowerCase().trim();
 
-    if (!cName || !pName) return false;
-    
-    // 2. Exact Match
-    if (cName === pName) return true;
+      if (!cName || !pName) return false;
+      if (cName === pName) return true;
 
-    // 3. Fuzzy Match (Checking if significant name parts overlap)
-    // Example: "Rajesh Mehta" vs "Rajesh M" will match because "rajesh" is in both.
-    const cParts = cName.split(/[\s,.-]+/).filter(x => x.length > 2); // Ignore short words like 'M'
-    const pParts = pName.split(/[\s,.-]+/).filter(x => x.length > 2);
+      const cParts = cName.split(/[\s,.-]+/).filter(x => x.length > 2); 
+      const pParts = pName.split(/[\s,.-]+/).filter(x => x.length > 2);
 
-    return cParts.some(cp => pParts.includes(cp));
+      return cParts.some(cp => pParts.includes(cp));
+    }
   }) : [];
+
+  // Logic for Insurance "Select All"
+  const isAllInsSelected = displaySuggestedPolicies.length > 0 && displaySuggestedPolicies.every(p => selectedSuggestions.has(p.docId));
+  const toggleSelectAllIns = () => {
+    const newSet = new Set(selectedSuggestions);
+    if (isAllInsSelected) {
+      displaySuggestedPolicies.forEach(p => newSet.delete(p.docId));
+    } else {
+      displaySuggestedPolicies.forEach(p => newSet.add(p.docId));
+    }
+    setSelectedSuggestions(newSet);
+  };
 
 
   const uniqueRMs = [...new Set(clients.map(c => c.rm_assigned).filter(v => v && v !== "-"))].sort();
@@ -314,7 +334,6 @@ export default function Clients() {
         linkedClientId: selected.id,
         linkedClientName: selected.client_name
       });
-      // Remove from selected set just in case
       const newSet = new Set(selectedSuggestions);
       newSet.delete(policyDocId);
       setSelectedSuggestions(newSet);
@@ -1279,58 +1298,97 @@ export default function Clients() {
                 {activeTab === "insurance" && (
                   <div className="animate-in fade-in duration-200">
                     
-                    {/* Suggestion Banner for Unlinked Policies that match this client's name */}
-                    {suggestedPolicies.length > 0 && (
-                      <div className="mb-6 p-4 rounded-xl border border-blue-500/30 bg-blue-500/10">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-3 gap-3">
-                          <h4 className="text-sm font-bold text-blue-400 flex items-center gap-2">
-                            <Info size={16} /> Found {suggestedPolicies.length} Matching Unlinked Policies
-                          </h4>
-                          {selectedSuggestions.size > 0 && (
-                            <button 
-                              onClick={handleBulkLinkPolicies} 
-                              className="text-xs px-3 py-1.5 bg-blue-500 text-white rounded hover:bg-blue-600 font-bold transition-all shadow-lg shadow-blue-500/20 whitespace-nowrap"
-                            >
-                              Link {selectedSuggestions.size} Selected
-                            </button>
-                          )}
-                        </div>
-                        <p className="text-xs text-blue-300/80 mb-4">We found existing records in the master database that may belong to <strong>"{selected.client_name}"</strong>. Select and link them to attach them to this profile.</p>
-                        
-                        <div className="space-y-2">
-                          {suggestedPolicies.map(p => (
-                            <div key={p.docId} className="flex items-center gap-3 bg-black/40 p-3 rounded-lg border border-blue-500/20">
+                    {/* Always show the search bar at the top of the insurance tab so user can manually link */}
+                    <div className="mb-6">
+                      <div className="relative mb-4">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#889995]" />
+                        <input 
+                          type="text" 
+                          placeholder="Search all unlinked policies by name, policy no, or plan..." 
+                          value={insSearch}
+                          onChange={(e) => setInsSearch(e.target.value)}
+                          className="w-full bg-[#050a09] border border-white/10 text-white text-sm rounded-xl py-2.5 pl-10 pr-3 outline-none focus:border-blue-500 transition-colors"
+                        />
+                        {insSearch && (
+                          <button onClick={() => setInsSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#889995] hover:text-white">
+                            <X size={14} />
+                          </button>
+                        )}
+                      </div>
+
+                      {displaySuggestedPolicies.length > 0 ? (
+                        <div className="p-4 rounded-xl border border-blue-500/30 bg-blue-500/10">
+                          {/* Header with Select All and Link button */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-3 gap-3">
+                            <div className="flex items-center gap-3">
                               <input 
                                 type="checkbox" 
                                 className="w-4 h-4 rounded cursor-pointer accent-blue-500"
-                                checked={selectedSuggestions.has(p.docId)}
-                                onChange={() => toggleSuggestionSelection(p.docId)}
+                                checked={isAllInsSelected}
+                                onChange={toggleSelectAllIns}
                               />
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs font-bold text-white flex items-center gap-2 truncate">
-                                  {p.policyHolder} <span className="text-[10px] font-medium text-blue-300/70 truncate">- {p.plan}</span>
-                                </p>
-                                <p className="text-[10px] font-mono text-blue-400 mt-1">
-                                  Policy: {p.policyNo} | Premium: ₹{Number(p.premiumAmount || 0).toLocaleString('en-IN')}
-                                </p>
-                              </div>
-                              <button 
-                                onClick={() => handleLinkSinglePolicy(p.docId)} 
-                                className="text-xs px-3 py-1.5 bg-blue-500/20 text-blue-400 rounded border border-blue-500/30 hover:bg-blue-500 hover:text-white font-bold transition-all"
-                              >
-                                Link
-                              </button>
+                              <h4 className="text-sm font-bold text-blue-400 flex items-center gap-1">
+                                <Info size={16} /> 
+                                {insSearch ? `Search Results (${displaySuggestedPolicies.length})` : `Suggested Matches (${displaySuggestedPolicies.length})`}
+                              </h4>
                             </div>
-                          ))}
+                            {selectedSuggestions.size > 0 && (
+                              <button 
+                                onClick={handleBulkLinkPolicies} 
+                                className="text-xs px-3 py-1.5 bg-blue-500 text-white rounded hover:bg-blue-600 font-bold transition-all shadow-lg shadow-blue-500/20 whitespace-nowrap"
+                              >
+                                Link {selectedSuggestions.size} Selected
+                              </button>
+                            )}
+                          </div>
+                          
+                          <p className="text-xs text-blue-300/80 mb-4">
+                            {insSearch 
+                              ? "Select records below to link them to this client's profile." 
+                              : `We found existing records that may belong to "${selected.client_name}". Select and link them to attach them to this profile.`}
+                          </p>
+                          
+                          <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+                            {displaySuggestedPolicies.map(p => (
+                              <div key={p.docId} className="flex items-center gap-3 bg-black/40 p-3 rounded-lg border border-blue-500/20">
+                                <input 
+                                  type="checkbox" 
+                                  className="w-4 h-4 rounded cursor-pointer accent-blue-500"
+                                  checked={selectedSuggestions.has(p.docId)}
+                                  onChange={() => toggleSuggestionSelection(p.docId)}
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-bold text-white flex items-center gap-2 truncate">
+                                    {p.policyHolder} <span className="text-[10px] font-medium text-blue-300/70 truncate">- {p.plan}</span>
+                                  </p>
+                                  <p className="text-[10px] font-mono text-blue-400 mt-1">
+                                    Policy: {p.policyNo} | Premium: ₹{Number(p.premiumAmount || 0).toLocaleString('en-IN')}
+                                  </p>
+                                </div>
+                                <button 
+                                  onClick={() => handleLinkSinglePolicy(p.docId)} 
+                                  className="text-xs px-3 py-1.5 bg-blue-500/20 text-blue-400 rounded border border-blue-500/30 hover:bg-blue-500 hover:text-white font-bold transition-all"
+                                >
+                                  Link
+                                </button>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      ) : (
+                        insSearch && (
+                          <div className="p-4 text-center text-sm text-[#889995] border border-dashed border-white/10 rounded-xl bg-black/20">
+                            No unlinked policies found matching "{insSearch}".
+                          </div>
+                        )
+                      )}
+                    </div>
 
                     {/* Linked Policies List */}
                     {clientPolicies.length === 0 ? (
                       <div className="text-center py-12 border border-dashed border-white/10 rounded-xl bg-black/20">
                         <p className="text-sm text-[#889995] mb-4">No insurance policies linked to this client.</p>
-                        <p className="text-xs text-white/50">Upload records in the <strong>Insurance Review</strong> tab to see them here.</p>
+                        <p className="text-xs text-white/50">Use the search bar above to link existing records, or upload new records in the <strong>Insurance Review</strong> tab.</p>
                       </div>
                     ) : (
                       <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
