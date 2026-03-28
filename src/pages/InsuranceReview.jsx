@@ -1,7 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { format, parse, isSameMonth, isBefore, startOfDay, isValid, parseISO } from 'date-fns';
+import { parse, isBefore, startOfDay, isValid } from 'date-fns';
 import { UploadCloud, Trash2, CheckCircle, AlertCircle, Clock, Search, X, Edit2 } from 'lucide-react';
+
+// FIREBASE IMPORTS
+// ⚠️ Ensure this path points to your actual firebase.js config file
+import { db } from '../firebase'; 
+import { collection, doc, writeBatch, getDocs, deleteDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 
 export default function InsuranceReview() {
   const [policies, setPolicies] = useState([]);
@@ -12,9 +17,10 @@ export default function InsuranceReview() {
   const [selectedRows, setSelectedRows] = useState([]);
   const fileInputRef = useRef(null);
 
-  // Filters
+  // Filters - By default, dates are empty so it shows EVERYTHING
   const [filters, setFilters] = useState({
-    month: format(new Date(), 'yyyy-MM'),
+    startDate: '',
+    endDate: '',
     status: 'All',
     planType: 'All',
     ecs: 'All',
@@ -31,7 +37,17 @@ export default function InsuranceReview() {
     return parsed;
   };
 
-  // --- Upload & Parsing Logic ---
+  // --- Firebase Fetch Data (Real-time listener) ---
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'insurance_policies'), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
+      setPolicies(data);
+    });
+    
+    return () => unsubscribe();
+  }, []);
+
+  // --- Firebase Upload & Parsing Logic ---
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -66,18 +82,52 @@ export default function InsuranceReview() {
       })).filter(p => p.policyNo !== ""); 
 
       try {
-        const response = await fetch('/api/insurance/upsert', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ policies: formattedData })
-        });
-        const result = await response.json();
+        const policiesRef = collection(db, 'insurance_policies');
+        const existingSnapshot = await getDocs(policiesRef);
+        const existingPolicies = {};
+        existingSnapshot.forEach(doc => { existingPolicies[doc.id] = doc.data(); });
+
+        let batches = [writeBatch(db)];
+        let batchIndex = 0;
+        let opCount = 0;
         
-        setUploadSummary(result.summary);
-        fetchPolicies(); 
+        let newCount = 0;
+        let updatedCount = 0;
+        let skippedCount = 0;
+
+        for (const policy of formattedData) {
+          const safeDocId = String(policy.policyNo).replace(/\//g, '-');
+          const docRef = doc(policiesRef, safeDocId);
+          const existing = existingPolicies[safeDocId];
+
+          if (existing) {
+            if (existing.renewalStatus !== policy.renewalStatus || 
+                existing.dueDate !== policy.dueDate || 
+                existing.duePremium !== policy.duePremium) {
+              batches[batchIndex].update(docRef, policy);
+              updatedCount++;
+              opCount++;
+            } else {
+              skippedCount++;
+            }
+          } else {
+            batches[batchIndex].set(docRef, policy);
+            newCount++;
+            opCount++;
+          }
+
+          if (opCount >= 490) {
+            batches.push(writeBatch(db));
+            batchIndex++;
+            opCount = 0;
+          }
+        }
+
+        for (const b of batches) { await b.commit(); }
+        setUploadSummary({ new: newCount, updated: updatedCount, skipped: skippedCount });
       } catch (error) {
-        console.error("Upload failed:", error);
-        alert("Failed to sync data with server. Ensure backend is running.");
+        console.error("Firebase Upload failed:", error);
+        alert("Failed to sync data with Firebase.");
       } finally {
         setLoading(false);
         if (fileInputRef.current) fileInputRef.current.value = '';
@@ -86,86 +136,100 @@ export default function InsuranceReview() {
     reader.readAsArrayBuffer(file);
   };
 
-  // --- Fetch Data ---
-  const fetchPolicies = async () => {
-    // Replace with your actual GET endpoint
-    // const res = await fetch('/api/insurance');
-    // const data = await res.json();
-    // setPolicies(data);
+  // --- Firebase Actions ---
+  const handleBulkDelete = async () => {
+    if (!window.confirm(`Delete ${selectedRows.length} selected records?`)) return;
+    try {
+      const batch = writeBatch(db);
+      selectedRows.forEach(policyNo => {
+        const safeDocId = String(policyNo).replace(/\//g, '-');
+        batch.delete(doc(db, 'insurance_policies', safeDocId));
+      });
+      await batch.commit();
+      setSelectedRows([]);
+    } catch (e) {
+      console.error("Bulk Delete Error:", e);
+      alert("Failed to delete bulk records.");
+    }
   };
 
-  useEffect(() => {
-    fetchPolicies();
-  }, []);
-
-  // --- KPI Calculations ---
-  const today = startOfDay(new Date());
-  const targetMonthDate = filters.month ? parseISO(`${filters.month}-01`) : new Date();
-
-  const currentMonthPolicies = policies.filter(p => {
-    const dDate = parseDateString(p.dueDate);
-    return isValid(dDate) && isSameMonth(dDate, targetMonthDate);
-  });
-
-  const kpis = {
-    renewed: currentMonthPolicies.filter(p => p.renewalStatus?.toLowerCase().includes('renewed')).length,
-    overdue: currentMonthPolicies.filter(p => {
-      const dDate = parseDateString(p.dueDate);
-      return !p.renewalStatus?.toLowerCase().includes('renewed') && isBefore(dDate, today);
-    }).length,
-    left: currentMonthPolicies.filter(p => {
-      const dDate = parseDateString(p.dueDate);
-      return !p.renewalStatus?.toLowerCase().includes('renewed') && !isBefore(dDate, today);
-    }).length,
+  const handleDeleteSingle = async (policyNo) => {
+    if (!window.confirm('Delete this record?')) return;
+    try {
+      const safeDocId = String(policyNo).replace(/\//g, '-');
+      await deleteDoc(doc(db, 'insurance_policies', safeDocId));
+    } catch (e) {
+      console.error("Delete Error:", e);
+      alert("Failed to delete record.");
+    }
   };
 
-  // --- Filtering ---
+  const handleInlineEdit = async (policyNo, field, value) => {
+    setPolicies(policies.map(p => p.policyNo === policyNo ? { ...p, [field]: value } : p));
+    try {
+      const safeDocId = String(policyNo).replace(/\//g, '-');
+      await updateDoc(doc(db, 'insurance_policies', safeDocId), { [field]: value });
+    } catch (e) {
+      console.error("Inline Update failed", e);
+      alert("Failed to save changes.");
+    }
+  };
+
+  const toggleRow = (id) => {
+    setSelectedRows(prev => prev.includes(id) ? prev.filter(rowId => rowId !== id) : [...prev, id]);
+  };
+
+  // --- Filtering (Now supports Date Range) ---
   const filteredPolicies = policies.filter(p => {
-    const matchMonth = filters.month ? isSameMonth(parseDateString(p.dueDate), targetMonthDate) : true;
+    const pDate = parseDateString(p.dueDate);
+    let matchDate = true;
+
+    // Check Date Range if either start or end is provided
+    if (isValid(pDate)) {
+      const policyDateStart = startOfDay(pDate);
+      if (filters.startDate && filters.endDate) {
+        matchDate = policyDateStart >= startOfDay(new Date(filters.startDate)) && 
+                    policyDateStart <= startOfDay(new Date(filters.endDate));
+      } else if (filters.startDate) {
+        matchDate = policyDateStart >= startOfDay(new Date(filters.startDate));
+      } else if (filters.endDate) {
+        matchDate = policyDateStart <= startOfDay(new Date(filters.endDate));
+      }
+    } else if (filters.startDate || filters.endDate) {
+      // If a filter is applied but the policy has a bad date, filter it out
+      matchDate = false;
+    }
+
     const matchStatus = filters.status === 'All' || p.renewalStatus === filters.status;
     const matchPlan = filters.planType === 'All' || p.planType === filters.planType;
     const matchEcs = filters.ecs === 'All' || p.ecs === filters.ecs;
     const matchSearch = p.policyHolder.toLowerCase().includes(filters.search.toLowerCase()) || 
                         p.policyNo.toLowerCase().includes(filters.search.toLowerCase());
-    return matchMonth && matchStatus && matchPlan && matchEcs && matchSearch;
+    
+    return matchDate && matchStatus && matchPlan && matchEcs && matchSearch;
   });
 
-  // --- Actions ---
-  const toggleRow = (id) => {
-    setSelectedRows(prev => prev.includes(id) ? prev.filter(rowId => rowId !== id) : [...prev, id]);
-  };
+  // --- Dynamic KPI Calculations (Based on Filtered Data) ---
+  const today = startOfDay(new Date());
 
-  const handleBulkDelete = async () => {
-    if (!window.confirm(`Delete ${selectedRows.length} selected records?`)) return;
-    setPolicies(policies.filter(p => !selectedRows.includes(p.policyNo)));
-    const idsToDelete = [...selectedRows];
-    setSelectedRows([]);
-    await fetch('/api/insurance/bulk-delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ policyIds: idsToDelete })
-    });
-  };
-
-  const handleDeleteSingle = async (id) => {
-    if (!window.confirm('Delete this record?')) return;
-    setPolicies(policies.filter(p => p.policyNo !== id));
-    await fetch(`/api/insurance/${id}`, { method: 'DELETE' });
-  };
-
-  const handleInlineEdit = async (id, field, value) => {
-    setPolicies(policies.map(p => p.policyNo === id ? { ...p, [field]: value } : p));
-    await fetch(`/api/insurance/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [field]: value })
-    });
+  const kpis = {
+    renewed: filteredPolicies.filter(p => p.renewalStatus?.toLowerCase().includes('renewed') && !p.renewalStatus?.toLowerCase().includes('not')).length,
+    overdue: filteredPolicies.filter(p => {
+      const dDate = parseDateString(p.dueDate);
+      const isNotRenewed = p.renewalStatus?.toLowerCase().includes('not') || p.renewalStatus?.toLowerCase().includes('pending') || !p.renewalStatus?.toLowerCase().includes('renewed');
+      return isNotRenewed && isValid(dDate) && isBefore(dDate, today);
+    }).length,
+    left: filteredPolicies.filter(p => {
+      const dDate = parseDateString(p.dueDate);
+      const isNotRenewed = p.renewalStatus?.toLowerCase().includes('not') || p.renewalStatus?.toLowerCase().includes('pending') || !p.renewalStatus?.toLowerCase().includes('renewed');
+      return isNotRenewed && isValid(dDate) && !isBefore(dDate, today);
+    }).length,
   };
 
   const uniquePlanTypes = [...new Set(policies.map(p => p.planType).filter(Boolean))];
   const uniqueEcs = [...new Set(policies.map(p => p.ecs).filter(Boolean))];
 
-  // Common styles to match your theme
+  // Common UI styles
   const iStyle = "bg-[#050a09] border border-white/10 text-white text-sm rounded-xl px-3 py-2.5 outline-none focus:border-[#4ade80] placeholder-[#889995] transition-colors";
   const thStyle = "p-4 text-left text-[10px] font-bold text-[#889995] uppercase tracking-wider border-b border-white/10";
   const tdStyle = "p-4 text-[13px] font-semibold text-white border-b border-white/5";
@@ -177,7 +241,7 @@ export default function InsuranceReview() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Insurance Review Dashboard</h1>
-          <p className="text-sm mt-1 text-[#889995]">Track and manage monthly policy renewals.</p>
+          <p className="text-sm mt-1 text-[#889995]">Track and manage policy renewals.</p>
         </div>
         
         <div className="flex items-center gap-4">
@@ -205,7 +269,7 @@ export default function InsuranceReview() {
         </div>
       )}
 
-      {/* KPI Cards */}
+      {/* KPI Cards (Now reflect the applied filters) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="p-6 rounded-2xl bg-[#050a09] border border-white/10 relative overflow-hidden group">
           <div className="absolute top-0 right-0 w-24 h-24 bg-[#4ade80]/5 rounded-full blur-2xl group-hover:bg-[#4ade80]/10 transition-colors" />
@@ -232,10 +296,29 @@ export default function InsuranceReview() {
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#889995]" />
-              <input type="text" placeholder="Search Policy or Holder..." value={filters.search} onChange={e => setFilters({...filters, search: e.target.value})} className={`${iStyle} pl-10 w-64`} />
+              <input type="text" placeholder="Search Policy or Holder..." value={filters.search} onChange={e => setFilters({...filters, search: e.target.value})} className={`${iStyle} pl-10 w-48`} />
             </div>
             
-            <input type="month" value={filters.month} onChange={e => setFilters({...filters, month: e.target.value})} className={iStyle} style={{ colorScheme: 'dark' }} />
+            {/* Date Range Inputs */}
+            <div className="flex items-center gap-2 bg-[#050a09] border border-white/10 rounded-xl px-1">
+              <input 
+                type="date" 
+                value={filters.startDate} 
+                onChange={e => setFilters({...filters, startDate: e.target.value})} 
+                className="bg-transparent border-none text-white text-sm px-2 py-2.5 outline-none focus:text-[#4ade80] transition-colors w-[130px]" 
+                style={{ colorScheme: 'dark' }} 
+                title="Start Date"
+              />
+              <span className="text-[#889995] text-xs font-bold">TO</span>
+              <input 
+                type="date" 
+                value={filters.endDate} 
+                onChange={e => setFilters({...filters, endDate: e.target.value})} 
+                className="bg-transparent border-none text-white text-sm px-2 py-2.5 outline-none focus:text-[#4ade80] transition-colors w-[130px]" 
+                style={{ colorScheme: 'dark' }} 
+                title="End Date"
+              />
+            </div>
             
             <select value={filters.status} onChange={e => setFilters({...filters, status: e.target.value})} className={iStyle}>
               <option value="All">All Statuses</option>
@@ -253,10 +336,16 @@ export default function InsuranceReview() {
               <option value="All">All ECS/Non-ECS</option>
               {uniqueEcs.map(e => <option key={e} value={e}>{e}</option>)}
             </select>
+
+            {(filters.startDate || filters.endDate || filters.status !== 'All' || filters.planType !== 'All' || filters.ecs !== 'All' || filters.search) && (
+               <button onClick={() => setFilters({startDate: '', endDate: '', status: 'All', planType: 'All', ecs: 'All', search: ''})} className="text-xs text-[#889995] hover:text-white underline underline-offset-2 ml-2 transition-colors">
+                 Clear Filters
+               </button>
+            )}
           </div>
 
           {selectedRows.length > 0 && (
-            <button onClick={handleBulkDelete} className="flex items-center gap-2 bg-red-500/10 text-red-400 border border-red-500/20 px-4 py-2 rounded-xl text-xs font-bold hover:bg-red-500/20 transition-all">
+            <button onClick={handleBulkDelete} className="flex items-center gap-2 bg-red-500/10 text-red-400 border border-red-500/20 px-4 py-2 rounded-xl text-xs font-bold hover:bg-red-500/20 transition-all shrink-0">
               <Trash2 size={14} /> Delete Selected ({selectedRows.length})
             </button>
           )}
